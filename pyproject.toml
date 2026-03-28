@@ -1,0 +1,22 @@
+[project]
+name = "mosquito-dashboard-be"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.18.4",
+    "fastapi>=0.133.0",
+    "fastapi-sqlalchemy>=0.2.1",
+    "psycopg2-binary>=2.9.11",
+    "pydantic[email]>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "python-dotenv>=1.2.2",
+    "sqlalchemy>=2.0.48",
+    "uvicorn>=0.41.0",
+    "bcrypt>=5.0.0",
+    "pyjwt>=2.11.0",
+    "resend>=2.23.0",
+    "paho-mqtt>=2.1.0",
+    "fastapi-mqtt>=2.2.0",
+]
