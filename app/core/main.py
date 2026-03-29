@@ -54,7 +54,7 @@ def create_application() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # TODO: Change to specific origins
+        allow_origins=["http://localhost:3000","https://mosquitosurveillancedashboard.website"],  # TODO: Change to specific origins
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
