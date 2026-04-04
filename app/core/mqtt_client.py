@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 BROKER = os.getenv("MQTT_BROKER", "localhost")
 PORT = int(os.getenv("MQTT_PORT", 1883))
 TOPIC_SENSOR_DATA = os.getenv("TOPIC_SENSOR_DATA", "mosquito_dashboard/+/sensor_data")
-TOPIC_MOSQUITO_COUNT = os.getenv("TOPIC_MOSQUITO_COUNT", "mosquito_dashboard/+/mosquito_count")
+TOPIC_MOSQUITO_COUNT = os.getenv("TOPIC_MOSQUITO_COUNT", "mosquito_dashboard/+/mosquito_data")
 CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "mosquito_dashboard_server")
 
 mqtt_config = MQTTConfig(
@@ -58,7 +58,7 @@ def handle_sensor_data(db, device: Device, data: dict):
 
 def handle_mosquito_event(db, device: Device, data: dict):
     """
-    Handles mosquito_count topic payload:
+    Handles mosquito_data topic payload:
     {
         "timestamp": "...",
         "sensor_id": "ESP32_001",
