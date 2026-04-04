@@ -1,8 +1,9 @@
 from app.core.database import Base
-from sqlalchemy import Enum, Integer, String, DateTime, Boolean
+from sqlalchemy import Enum, Integer, String, DateTime, Boolean,ForeignKey
 from sqlalchemy.orm import relationship, mapped_column, Mapped
 from datetime import datetime
-from app.authentication.enums import UserRole, ApprovalStatus
+from app.authentication.enums import UserRole, ApprovalStatus,ResearcherRequestStatus
+from app.device.models import DeviceCluster
 
 
 
@@ -19,7 +20,16 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.USER)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
-
+    researcher_request: Mapped["ResearcherRequest | None"] = relationship(
+        "ResearcherRequest",
+        back_populates="user",
+        uselist=False,
+    )
+    clusters: Mapped[list["DeviceCluster"]] = relationship(
+        "DeviceCluster",
+        secondary="cluster_admins",
+        back_populates="cluster_admins"
+    )
     def __repr__(self):
         return f"User(id={self.id}, email={self.email}, first_name={self.first_name}, last_name={self.last_name})"
 
@@ -51,3 +61,22 @@ class User(Base):
     def is_pending(self):
         return self.approval_status == ApprovalStatus.PENDING
     
+
+
+
+
+class ResearcherRequest(Base):
+    __tablename__ = "researcher_requests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user: Mapped["User"] = relationship("User", back_populates="researcher_request")
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), unique=True)
+    cluster: Mapped["DeviceCluster"] = relationship("DeviceCluster", back_populates="researcher_request")
+    cluster_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("device_clusters.id"), unique=True, nullable=True)
+    status: Mapped[ResearcherRequestStatus] = mapped_column(Enum(ResearcherRequestStatus), default=ResearcherRequestStatus.PENDING)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+
+    def __repr__(self):
+        return f"ResearcherRequest(id={self.id}, email={self.user.email}, first_name={self.user.first_name}, last_name={self.user.last_name})"

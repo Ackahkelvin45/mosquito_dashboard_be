@@ -43,6 +43,8 @@ class UserResponse(UserBase):
     created_at: datetime = Field(...,description="Created at of the user")
     updated_at: datetime = Field(...,description="Updated at of the user")
 
+    model_config = ConfigDict(from_attributes=True)
+
 class UserUpdate(UserBase):
     id: int = Field(...,description="ID of the user")
     first_name: Optional[str] = Field(None,min_length=2, max_length=50, description="First name of the user")
@@ -60,6 +62,34 @@ class UserLogin(BaseModel):
 class UserLoginResponse(BaseModel):
     access_token: str = Field(...,description="Access token of the user")
     refresh_token: str = Field(...,description="Refresh token of the user")
+    user_id: Optional[int] = Field(None,description="ID of the user")
 
 class UserLogout(BaseModel):
     message: str = Field(...,description="Message of the user")
+
+
+
+
+
+class ResearcherRequestResponse(BaseModel):
+    id: int = Field(...,description="ID of the researcher request")
+    user: UserResponse = Field(...,description="User who made the researcher request")
+    cluster_id: Optional[int] = Field(None,description="ID of the device cluster associated with the researcher request")
+    status: str = Field(...,description="Status of the researcher request")
+    created_at: datetime = Field(...,description="Created at of the researcher request")
+    updated_at: datetime = Field(...,description="Updated at of the researcher request")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+
+class ResearcherRequestCreate(BaseModel):
+    user_id: int = Field(...,description="ID of the user making the researcher request")
+    cluster_id: Optional[int] = Field(None,description="ID of the device cluster associated with the researcher request")
+
+
+
+
+class UpdateResearcherRequest(BaseModel):
+    status: Optional[str] = Field(None,description="Status of the researcher request")
+    cluster_id: Optional[int] = Field(None,description="ID of the device cluster associated with the researcher request")

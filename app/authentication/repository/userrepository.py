@@ -25,7 +25,19 @@ class UserRepository(BaseRepository[User]):
 
     def get_all_users(self) -> list[User]:
         return self.session.query(User).all()
+    
+    def filter_users(self, email: str = None, name: str = None, role: str = None, approval_status: str = None) -> list[User]:
+        query = self.session.query(User)
+        if email is not None:
+            query = query.filter(User.email == email)
+        if name is not None:
+            query = query.filter(User.first_name.ilike(f"%{name}%") | User.last_name.ilike(f"%{name}%"))
+        if role is not None:
+            query = query.filter(User.role == role)
+        if approval_status is not None:
+            query = query.filter(User.approval_status == approval_status)
 
+        return query.all()
 
 
   

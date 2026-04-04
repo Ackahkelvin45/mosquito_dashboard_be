@@ -5,6 +5,10 @@ from dotenv import load_dotenv
 from alembic import context
 from app.core.database import Base
 
+# Ensure all model modules are imported so Base.metadata is populated for autogenerate.
+from app.authentication import models as _authentication_models  # noqa: F401
+from app.device import models as _device_models  # noqa: F401
+
 # Load .env
 load_dotenv()
 

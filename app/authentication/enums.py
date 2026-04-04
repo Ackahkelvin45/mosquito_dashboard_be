@@ -21,3 +21,9 @@ class DeviceStatus(StrEnum):
     REPAIR = "repair"
     DISPOSED = "disposed"
 
+
+class ResearcherRequestStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+

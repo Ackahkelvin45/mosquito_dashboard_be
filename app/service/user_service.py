@@ -30,7 +30,8 @@ class UserService:
             raise HTTPException(status_code=400, detail="Invalid credentials")
         access_token = self.auth_handler.create_access_token(user.id)
         refresh_token = self.auth_handler.create_refresh_token(user.id)
-        return UserLoginResponse(access_token=access_token, refresh_token=refresh_token)
+        user_id = user.id
+        return UserLoginResponse(access_token=access_token, refresh_token=refresh_token, user_id=user_id)
 
 
     def refresh_token(self, refresh_token: str) -> UserLoginResponse:
@@ -50,6 +51,15 @@ class UserService:
         
 
 
-    def get_users(self) -> list[UserResponse]:
-        users = self.user_repository.get_all_users()
+    def get_users(self,
+                  email: str = None,
+                  name: str = None,
+                  role: str = None,
+                  approval_status: str = None
+                  ) -> list[UserResponse]:
+        if any(v is not None for v in [email, name, role, approval_status]):
+            users = self.user_repository.filter_users(email=email, name=name, role=role, approval_status=approval_status)
+        else:
+            users = self.user_repository.get_all_users()
+
         return [UserResponse.model_validate(user) for user in users]

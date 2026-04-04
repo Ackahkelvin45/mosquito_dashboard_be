@@ -1,9 +1,48 @@
 from app.core.database import Base
-from sqlalchemy import Enum, Integer, String, DateTime, Boolean, Float,ForeignKey
+from sqlalchemy import Enum, Integer, String, DateTime, Boolean, Float, ForeignKey, Table, Column
 from sqlalchemy.orm import relationship, mapped_column, Mapped
 from datetime import datetime
 from app.authentication.enums import DeviceStatus
 import uuid
+from  .enums import Status
+
+
+
+cluster_admins_table = Table(
+    "cluster_admins",
+    Base.metadata,
+    Column("cluster_id", Integer, ForeignKey("device_clusters.id"), primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),
+)
+
+
+
+class DeviceCluster(Base):
+    __tablename__ = "device_clusters"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    cluster_uuid: Mapped[str] = mapped_column(String(100), unique=True, index=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    description: Mapped[str] = mapped_column(String(255))
+    password: Mapped[str] = mapped_column(String(255))
+    public: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+    devices: Mapped[list["Device"]] = relationship("Device", back_populates="cluster")
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.PENDING)
+    researcher_request: Mapped["ResearcherRequest | None"] = relationship(
+        "ResearcherRequest",
+        back_populates="cluster",
+        uselist=False,
+    )
+    cluster_admins: Mapped[list["User"]] = relationship(
+        "User",
+        secondary=cluster_admins_table,
+        back_populates="clusters",
+    )
+
+    def __repr__(self):
+        return f"DeviceCluster(id={self.id}, name={self.name})"
+
 
 
 class Device(Base):
@@ -16,14 +55,15 @@ class Device(Base):
     latitude: Mapped[float] = mapped_column(Float)
     region: Mapped[str] = mapped_column(String(100))
     gmap_link: Mapped[str] = mapped_column(String(255))
-
     last_activity: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
     total_mosquito_count: Mapped[int] = mapped_column(Integer, default=0)
-
     device_reading:Mapped[list["SensorDeviceReading"]]=relationship("SensorDeviceReading", back_populates="device", cascade="all, delete-orphan")
     mosquito_readings:Mapped[list["MosquitoEvent"]]=relationship("MosquitoEvent", back_populates="device", cascade="all, delete-orphan")
+    cluster_id: Mapped[int] = mapped_column(Integer, ForeignKey("device_clusters.id"), nullable=True)
+    cluster: Mapped["DeviceCluster"] = relationship("DeviceCluster", back_populates="devices")
+
  
     def __repr__(self):
         return (
