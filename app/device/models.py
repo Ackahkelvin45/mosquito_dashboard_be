@@ -63,6 +63,14 @@ class Device(Base):
     mosquito_readings:Mapped[list["MosquitoEvent"]]=relationship("MosquitoEvent", back_populates="device", cascade="all, delete-orphan")
     cluster_id: Mapped[int] = mapped_column(Integer, ForeignKey("device_clusters.id"), nullable=True)
     cluster: Mapped["DeviceCluster"] = relationship("DeviceCluster", back_populates="devices")
+    latest_reading: Mapped["SensorDeviceReading | None"] = relationship(
+        "SensorDeviceReading",
+        primaryjoin="and_(Device.id == SensorDeviceReading.device_id)",
+        order_by="desc(SensorDeviceReading.timestamp)",
+        uselist=False,
+        viewonly=True,
+        overlaps="device_reading",
+    )
 
  
     def __repr__(self):
@@ -71,6 +79,7 @@ class Device(Base):
             f"latitude={self.latitude}, last_activity={self.last_activity}, "
             f"created_at={self.created_at}, updated_at={self.updated_at})"
         )
+
 
   
     

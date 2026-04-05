@@ -48,38 +48,7 @@ class DeviceUpdate(BaseModel):
     cluster_id: Optional[int] = Field(None, description="ID of the device cluster this device belongs to")
 
 
-class DeviceResponse(DeviceBase):
-    id: int = Field(...,description="ID of the device")
-    last_activity: datetime = Field(...,description="Last activity timestamp of the device")
-    created_at: datetime = Field(...,description="Created at timestamp of the device")
-    updated_at: datetime = Field(...,description="Updated at timestamp of the device")
-    total_mosquito_count: int = Field(...,description="Total mosquito count recorded by the device")
-    cluster_id: Optional[int] = Field(None, description="ID of the device cluster this device belongs to")
 
-    model_config = ConfigDict(from_attributes=True)
-
-
-
-
-
-class DeviceClusterResponse(BaseModel):
-    id: int = Field(..., description="ID of the device cluster")
-    cluster_uuid: str = Field(..., description="Unique UUID for the device cluster")
-    name: str = Field(..., description="Name of the device cluster")
-    description: Optional[str] = Field(None, description="Description of the device cluster")
-    public: bool = Field(..., description="Whether the device cluster is public")
-    created_at: datetime = Field(..., description="Created at timestamp of the device cluster")
-    updated_at: datetime = Field(..., description="Updated at timestamp of the device cluster")
-    devices: list[DeviceResponse] = Field(default=[], description="List of devices in the cluster")
-    admins: list[UserResponse] = Field(
-        default=[],
-        description="List of users administering the cluster",
-        alias="cluster_admins",         
-        serialization_alias="admins",   
-    )
- 
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
- 
 
 
 class DeviceClusterCreate(BaseModel):
@@ -109,12 +78,57 @@ class SensorDataPayload(BaseModel):
     battery: float
     trap_status: Optional[bool] = False
 
-class SensorDataResponse(SensorDataPayload):
-    id: int = Field(...,description="ID of the sensor reading")
-    device_id: int = Field(...,description="ID of the device that recorded the reading")
+
+
+class SensorDataResponse(BaseModel):
+    id: int
+    device_id: int
+    timestamp: datetime
+    temp_external: float = Field(..., alias="external_temperature")
+    temp_internal: float = Field(..., alias="internal_temperature")
+    humidity_external: float = Field(..., alias="external_humidity")
+    humidity_internal: float = Field(..., alias="internal_humidity")
+    pressure_internal: float = Field(..., alias="internal_pressure")
+    external_light: float = 0.0
+    battery: float = Field(..., alias="battery_voltage")
+    trap_status: Optional[bool] = False
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class DeviceResponse(DeviceBase):
+    id: int = Field(...,description="ID of the device")
+    last_activity: datetime = Field(...,description="Last activity timestamp of the device")
+    created_at: datetime = Field(...,description="Created at timestamp of the device")
+    updated_at: datetime = Field(...,description="Updated at timestamp of the device")
+    total_mosquito_count: int = Field(...,description="Total mosquito count recorded by the device")
+    cluster_id: Optional[int] = Field(None, description="ID of the device cluster this device belongs to")
+    latest_reading: Optional[SensorDataResponse] = Field(None, description="Latest sensor reading from the device")
 
     model_config = ConfigDict(from_attributes=True)
 
+
+
+
+
+class DeviceClusterResponse(BaseModel):
+    id: int = Field(..., description="ID of the device cluster")
+    cluster_uuid: str = Field(..., description="Unique UUID for the device cluster")
+    name: str = Field(..., description="Name of the device cluster")
+    description: Optional[str] = Field(None, description="Description of the device cluster")
+    public: bool = Field(..., description="Whether the device cluster is public")
+    created_at: datetime = Field(..., description="Created at timestamp of the device cluster")
+    updated_at: datetime = Field(..., description="Updated at timestamp of the device cluster")
+    devices: list[DeviceResponse] = Field(default=[], description="List of devices in the cluster")
+    admins: list[UserResponse] = Field(
+        default=[],
+        description="List of users administering the cluster",
+        alias="cluster_admins",         
+        serialization_alias="admins",   
+    )
+ 
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+ 
 
 
 

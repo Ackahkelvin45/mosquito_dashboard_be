@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from app.crud.base import BaseRepository
-from app.device.models import Device,DeviceCluster
-from app.device.schema import DeviceCreate, DeviceUpdate
+from app.device.models import Device,DeviceCluster,SensorDeviceReading,MosquitoEvent,MosquitoIndividualReading
+from app.device.schema import DeviceCreate, DeviceUpdate,SensorDataPayload,MosquitoEventPayload
 from datetime import datetime, timezone
 from fastapi import HTTPException
 
@@ -134,3 +134,68 @@ class DeviceRepository(BaseRepository[Device]):
             raise ValueError("Device not found")
         device.last_activity = datetime.now(timezone.utc)
         self.session.commit()
+
+
+
+    def create_sensor_reading(self, device: Device, payload: SensorDataPayload) -> SensorDeviceReading:
+            reading = SensorDeviceReading(
+                device_id=device.id,
+                timestamp=payload.timestamp,
+                external_temperature=payload.temp_external,
+                internal_temperature=payload.temp_internal,
+                external_humidity=payload.humidity_external,
+                internal_humidity=payload.humidity_internal,
+                internal_pressure=payload.pressure_internal,
+                external_light=payload.external_light,
+                battery_voltage=payload.battery,
+                trap_status=payload.trap_status,
+            )
+            device.last_activity = payload.timestamp
+            self.session.add(reading)
+            self.session.commit()
+            self.session.refresh(reading)
+            return reading
+
+    
+
+    def get_sensor_readings(self, device_id: int) -> List[SensorDeviceReading]:
+        return (
+            self.session.query(SensorDeviceReading)
+            .filter(SensorDeviceReading.device_id == device_id)
+            .order_by(SensorDeviceReading.timestamp.desc())
+            .all()
+        )
+
+    def create_mosquito_event(self, device: Device, payload: MosquitoEventPayload) -> MosquitoEvent:
+        individual_readings = [
+            MosquitoIndividualReading(
+                detection_timestamp=r.detection_timestamp,
+                species=r.species,
+                genus=r.genus,
+                age_group=r.age_group,
+                sex=r.sex,
+            )
+            for r in payload.mosquito_data
+        ]
+        event = MosquitoEvent(
+            device_id=device.id,
+            timestamp=payload.timestamp,
+            count=len(individual_readings),
+            individual_readings=individual_readings,
+        )
+        device.total_mosquito_count = (device.total_mosquito_count or 0) + len(individual_readings)
+        device.last_activity = payload.timestamp
+        self.session.add(event)
+        self.session.commit()
+        self.session.refresh(event)
+        return event
+    
+
+
+    def get_mosquito_events(self, device_id: int) -> List[MosquitoEvent]:
+        return (
+            self.session.query(MosquitoEvent)
+            .filter(MosquitoEvent.device_id == device_id)
+            .order_by(MosquitoEvent.timestamp.desc())
+            .all()
+        )
