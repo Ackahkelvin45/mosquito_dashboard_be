@@ -7,7 +7,7 @@ from app.device.repository.device_repository import DeviceRepository
 from app.device.schema import (
     DeviceCreate, DeviceResponse, DeviceUpdate,
     SensorDataPayload, SensorDataResponse,
-    MosquitoEventPayload, MosquitoIndividualResponse,
+    MosquitoEventPayload, MosquitoIndividualResponse, MosquitoEventResponse,
 )
 
 
@@ -99,13 +99,9 @@ class DeviceService:
         event = self.device_repository.create_mosquito_event(device, payload)
         return [MosquitoIndividualResponse.model_validate(r) for r in event.individual_readings]
 
-    def get_mosquito_events(self, device_uuid: str) -> List[MosquitoIndividualResponse]:
+    def get_mosquito_events(self, device_uuid: str) -> List[MosquitoEventResponse]:
         device = self.device_repository.get_by_uuid(device_uuid)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found")
         events = self.device_repository.get_mosquito_events(device.id)
-        return [
-            MosquitoIndividualResponse.model_validate(r)
-            for event in events
-            for r in event.individual_readings
-        ]
+        return [MosquitoEventResponse.model_validate(event) for event in events]

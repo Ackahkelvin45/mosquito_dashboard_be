@@ -78,7 +78,9 @@ class DeviceRepository(BaseRepository[Device]):
         )
 
     def delete_device(self, device_id: int) -> None:
+        print(f"Attempting to delete device with id: {device_id}")
         device = self.get_by_id(device_id)
+        
 
         if not device:
             raise ValueError("Device not found")
@@ -146,6 +148,7 @@ class DeviceRepository(BaseRepository[Device]):
                 external_humidity=payload.humidity_external,
                 internal_humidity=payload.humidity_internal,
                 internal_pressure=payload.pressure_internal,
+                external_pressure=payload.external_pressure,
                 external_light=payload.external_light,
                 battery_voltage=payload.battery,
                 trap_status=payload.trap_status,

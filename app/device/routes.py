@@ -5,7 +5,7 @@ from app.device.schema import (
     DeviceCreate, DeviceResponse, DeviceUpdate,
     DeviceClusterCreate, DeviceClusterResponse, DeviceClusterUpdate,
     MosquitoEventPayload, SensorDataPayload, SensorDataResponse,
-    MosquitoIndividualPayload, MosquitoIndividualResponse,
+    MosquitoIndividualPayload, MosquitoIndividualResponse, MosquitoEventResponse,
 )
 from app.core.database import get_db
 from sqlalchemy.orm import Session
@@ -54,6 +54,21 @@ def get_devices(
     except Exception as e:
         raise e
 
+
+@router.patch("/{device_id}", status_code=status.HTTP_200_OK, response_model=DeviceResponse, dependencies=[Depends(security)])
+def update_device(device_id: int, device_data: DeviceUpdate, session: Session = Depends(get_db)):
+    try:
+        return DeviceService(session).update_device(device_id, device_data)
+    except Exception as e:
+        raise e
+    
+
+@router.delete("/{device_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(security)])
+def delete_device(device_id: int, session: Session = Depends(get_db)):
+    try:
+        DeviceService(session).delete_device(device_id)
+    except Exception as e:
+        raise e
 
 
 @router.get("/clusters", status_code=status.HTTP_200_OK, response_model=List[DeviceClusterResponse], dependencies=[Depends(security)])
@@ -129,7 +144,7 @@ def ingest_mosquito_event(device_uuid: str, payload: MosquitoEventPayload, sessi
         raise e
 
 
-@router.get("/uuid/{device_uuid}/mosquito-events", status_code=status.HTTP_200_OK, response_model=List[MosquitoIndividualResponse], dependencies=[Depends(security)])
+@router.get("/uuid/{device_uuid}/mosquito-events", status_code=status.HTTP_200_OK, response_model=List[MosquitoEventResponse], dependencies=[Depends(security)])
 def get_mosquito_events(device_uuid: str, session: Session = Depends(get_db)):
     try:
         return DeviceService(session).get_mosquito_events(device_uuid)

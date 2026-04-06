@@ -74,6 +74,7 @@ class SensorDataPayload(BaseModel):
     humidity_external: float
     humidity_internal: float
     pressure_internal: float
+    pressure_external: float
     external_light: float = 0.0
     battery: float
     trap_status: Optional[bool] = False
@@ -84,13 +85,14 @@ class SensorDataResponse(BaseModel):
     id: int
     device_id: int
     timestamp: datetime
-    temp_external: float = Field(..., alias="external_temperature")
-    temp_internal: float = Field(..., alias="internal_temperature")
-    humidity_external: float = Field(..., alias="external_humidity")
-    humidity_internal: float = Field(..., alias="internal_humidity")
-    pressure_internal: float = Field(..., alias="internal_pressure")
-    external_light: float = 0.0
-    battery: float = Field(..., alias="battery_voltage")
+    temp_external: Optional[float] = Field(None, alias="external_temperature")
+    temp_internal: Optional[float] = Field(None, alias="internal_temperature")
+    humidity_external: Optional[float] = Field(None, alias="external_humidity")
+    humidity_internal: Optional[float] = Field(None, alias="internal_humidity")
+    pressure_internal: Optional[float] = Field(None, alias="internal_pressure")
+    external_pressure: Optional[float] = Field(None, alias="external_pressure")
+    external_light: Optional[float] = Field(None)
+    battery: Optional[float] = Field(None, alias="battery_voltage")
     trap_status: Optional[bool] = False
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -150,8 +152,20 @@ class MosquitoEventPayload(BaseModel):
 
 
 class MosquitoIndividualResponse(MosquitoIndividualPayload):
-    id: int = Field(...,description="ID of the individual mosquito reading")
-    batch_id: int = Field(...,description="ID of the mosquito event batch this reading belongs to")
+    id: int = Field(..., description="ID of the individual mosquito reading")
+    batch_id: int = Field(..., description="ID of the mosquito event batch this reading belongs to")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MosquitoEventResponse(BaseModel):
+    id: int = Field(..., description="ID of the mosquito event batch")
+    device_id: int = Field(..., description="ID of the device")
+    timestamp: datetime = Field(..., description="When the event batch was recorded")
+    count: int = Field(..., description="Number of mosquitoes detected in this event")
+    individual_readings: list[MosquitoIndividualResponse] = Field(
+        default=[], description="Individual mosquito detections in this event"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

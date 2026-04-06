@@ -23,6 +23,18 @@ mqtt_config = MQTTConfig(
 mqtt = FastMQTT(config=mqtt_config)
 
 
+def _parse_timestamp(value) -> datetime:
+    """Parse a timestamp that may be a string or already a datetime."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            logger.warning(f"Could not parse timestamp '{value}', using utcnow")
+    return datetime.utcnow()
+
+
 def handle_sensor_data(db, device: Device, data: dict):
     """
     Handles sensor_data topic payload:
@@ -34,23 +46,25 @@ def handle_sensor_data(db, device: Device, data: dict):
         "humidity_internal": 60,
         "humidity_external": 75,
         "pressure_internal": 1010,
+        "external_light": 200.0,
         "battery": 3.7,
-        ...
+        "trap_status": false
     }
     """
     reading = SensorDeviceReading(
         device_id=device.id,
-        timestamp=data.get("timestamp", datetime.utcnow()),
+        timestamp=_parse_timestamp(data.get("timestamp")),
         external_temperature=data.get("temp_external"),
         internal_temperature=data.get("temp_internal"),
         external_humidity=data.get("humidity_external"),
         internal_humidity=data.get("humidity_internal"),
         internal_pressure=data.get("pressure_internal"),
+        external_pressure=data.get("pressure_external"),
+        external_light=data.get("external_light"),
         battery_voltage=data.get("battery"),
         trap_status=data.get("trap_status", False),
     )
     db.add(reading)
-
     device.last_activity = datetime.utcnow()
     db.commit()
     logger.info(f"Sensor reading saved for device {device.device_uuid}")
@@ -76,12 +90,14 @@ def handle_mosquito_event(db, device: Device, data: dict):
     """
     mosquito_data = data.get("mosquito_data", [])
     if not mosquito_data:
-        logger.info(f"No mosquito data in payload for device {device.device_uuid}")
+        logger.info(
+            f"No mosquito data in payload for device {device.device_uuid}"
+        )
         return
 
     event = MosquitoEvent(
         device_id=device.id,
-        timestamp=data.get("timestamp", datetime.utcnow()),
+        timestamp=_parse_timestamp(data.get("timestamp")),
         count=len(mosquito_data),
     )
     db.add(event)
@@ -90,7 +106,9 @@ def handle_mosquito_event(db, device: Device, data: dict):
     for mosquito in mosquito_data:
         individual = MosquitoIndividualReading(
             batch_id=event.id,
-            detection_timestamp=mosquito.get("detection_timestamp", datetime.utcnow()),
+            detection_timestamp=_parse_timestamp(
+                mosquito.get("detection_timestamp")
+            ),
             species=mosquito.get("species"),
             genus=mosquito.get("genus"),
             age_group=mosquito.get("age_group"),
@@ -98,11 +116,13 @@ def handle_mosquito_event(db, device: Device, data: dict):
         )
         db.add(individual)
 
-    device.total_mosquito_count += len(mosquito_data)
+    device.total_mosquito_count = (device.total_mosquito_count or 0) + len(mosquito_data)
     device.last_activity = datetime.utcnow()
-
     db.commit()
-    logger.info(f"Mosquito event saved for device {device.device_uuid} — {len(mosquito_data)} individual(s)")
+    logger.info(
+        f"Mosquito event saved for device {device.device_uuid} "
+        f"— {len(mosquito_data)} individual(s)"
+    )
 
 
 @mqtt.on_connect()
@@ -143,7 +163,7 @@ async def on_message(client, topic, payload, qos, properties):
         if "sensor_data" in topic_str:
             handle_sensor_data(db, device, data)
 
-        elif "mosquito_count" in topic_str:
+        elif "mosquito_data" in topic_str:
             handle_mosquito_event(db, device, data)
 
         else:
