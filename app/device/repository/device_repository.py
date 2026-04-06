@@ -148,7 +148,7 @@ class DeviceRepository(BaseRepository[Device]):
                 external_humidity=payload.humidity_external,
                 internal_humidity=payload.humidity_internal,
                 internal_pressure=payload.pressure_internal,
-                external_pressure=payload.external_pressure,
+                external_pressure=payload.pressure_external,
                 external_light=payload.external_light,
                 battery_voltage=payload.battery,
                 trap_status=payload.trap_status,
