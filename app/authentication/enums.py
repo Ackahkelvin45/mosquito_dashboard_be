@@ -2,15 +2,15 @@ from enum import StrEnum
 
 
 class UserRole(StrEnum):
-    ADMIN = "admin"
-    USER = "user"
-    SUPER_ADMIN = "super_admin"
-  
+    ADMIN = "ADMIN"
+    USER = "USER"
+    SUPER_ADMIN = "SUPER_ADMIN"
+
 
 class ApprovalStatus(StrEnum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 

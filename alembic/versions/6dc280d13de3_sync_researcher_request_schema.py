@@ -59,26 +59,28 @@ def upgrade() -> None:
     # here (idempotently) so that the FK from researcher_requests -> users works.
     if not _has_table(inspector, "users"):
         if bind.dialect.name == "postgresql":
+            # The approvalstatus/userrole enums were originally created with
+            # UPPERCASE values — match that casing here.
             postgresql.ENUM(
-                "admin", "user", "super_admin", name="userrole"
+                "ADMIN", "USER", "SUPER_ADMIN", name="userrole"
             ).create(bind, checkfirst=True)
             postgresql.ENUM(
-                "pending", "approved", "rejected", name="approvalstatus"
+                "PENDING", "APPROVED", "REJECTED", name="approvalstatus"
             ).create(bind, checkfirst=True)
 
         # Use create_type=False so SQLAlchemy doesn't try to CREATE the
         # enum types again (we already ensured they exist above).
         approval_status_col = postgresql.ENUM(
-            "pending", "approved", "rejected",
+            "PENDING", "APPROVED", "REJECTED",
             name="approvalstatus", create_type=False,
         ) if bind.dialect.name == "postgresql" else sa.Enum(
-            "pending", "approved", "rejected", name="approvalstatus"
+            "PENDING", "APPROVED", "REJECTED", name="approvalstatus"
         )
         role_col = postgresql.ENUM(
-            "admin", "user", "super_admin",
+            "ADMIN", "USER", "SUPER_ADMIN",
             name="userrole", create_type=False,
         ) if bind.dialect.name == "postgresql" else sa.Enum(
-            "admin", "user", "super_admin", name="userrole"
+            "ADMIN", "USER", "SUPER_ADMIN", name="userrole"
         )
 
         op.create_table(
@@ -94,11 +96,11 @@ def upgrade() -> None:
             ),
             sa.Column(
                 "approval_status", approval_status_col,
-                nullable=False, server_default=sa.text("'pending'"),
+                nullable=False, server_default=sa.text("'PENDING'"),
             ),
             sa.Column(
                 "role", role_col,
-                nullable=False, server_default=sa.text("'user'"),
+                nullable=False, server_default=sa.text("'USER'"),
             ),
             sa.Column(
                 "created_at", sa.DateTime(), nullable=False,
