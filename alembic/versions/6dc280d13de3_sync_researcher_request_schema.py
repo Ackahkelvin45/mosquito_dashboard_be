@@ -54,6 +54,48 @@ def upgrade() -> None:
     bind = op.get_bind()
     inspector = inspect(bind)
 
+    # --- Create users table if it doesn't exist ---
+    # The users table was never generated in any prior migration. We create it
+    # here (idempotently) so that the FK from researcher_requests -> users works.
+    if not _has_table(inspector, "users"):
+        if bind.dialect.name == "postgresql":
+            postgresql.ENUM(
+                "admin", "user", "super_admin", name="userrole"
+            ).create(bind, checkfirst=True)
+            postgresql.ENUM(
+                "pending", "approved", "rejected", name="approvalstatus"
+            ).create(bind, checkfirst=True)
+
+        op.create_table(
+            "users",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("email", sa.String(length=100), nullable=False),
+            sa.Column("first_name", sa.String(length=100), nullable=False),
+            sa.Column("last_name", sa.String(length=100), nullable=False),
+            sa.Column("hashed_password", sa.String(length=255), nullable=False),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+            sa.Column(
+                "approval_status",
+                sa.Enum("pending", "approved", "rejected", name="approvalstatus"),
+                nullable=False,
+                server_default=sa.text("'pending'"),
+            ),
+            sa.Column(
+                "role",
+                sa.Enum("admin", "user", "super_admin", name="userrole"),
+                nullable=False,
+                server_default=sa.text("'user'"),
+            ),
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+            sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+            sa.PrimaryKeyConstraint("id"),
+        )
+        op.create_index(op.f("ix_users_id"), "users", ["id"], unique=False)
+        op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
+        # refresh inspector after creating the table
+        inspector = inspect(bind)
+
+
     # --- Enums (Postgres) ---
     if bind.dialect.name == "postgresql":
         researcher_status_enum = postgresql.ENUM(
