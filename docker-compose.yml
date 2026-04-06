@@ -20,7 +20,7 @@ services:
     ports:
       - "1883:1883"
     volumes:
-      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto:/mosquitto/config
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_pub -h localhost -p 1883 -t healthcheck -n -q 1"]
       interval: 5s
