@@ -66,6 +66,21 @@ def upgrade() -> None:
                 "pending", "approved", "rejected", name="approvalstatus"
             ).create(bind, checkfirst=True)
 
+        # Use create_type=False so SQLAlchemy doesn't try to CREATE the
+        # enum types again (we already ensured they exist above).
+        approval_status_col = postgresql.ENUM(
+            "pending", "approved", "rejected",
+            name="approvalstatus", create_type=False,
+        ) if bind.dialect.name == "postgresql" else sa.Enum(
+            "pending", "approved", "rejected", name="approvalstatus"
+        )
+        role_col = postgresql.ENUM(
+            "admin", "user", "super_admin",
+            name="userrole", create_type=False,
+        ) if bind.dialect.name == "postgresql" else sa.Enum(
+            "admin", "user", "super_admin", name="userrole"
+        )
+
         op.create_table(
             "users",
             sa.Column("id", sa.Integer(), nullable=False),
@@ -73,21 +88,26 @@ def upgrade() -> None:
             sa.Column("first_name", sa.String(length=100), nullable=False),
             sa.Column("last_name", sa.String(length=100), nullable=False),
             sa.Column("hashed_password", sa.String(length=255), nullable=False),
-            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
             sa.Column(
-                "approval_status",
-                sa.Enum("pending", "approved", "rejected", name="approvalstatus"),
-                nullable=False,
-                server_default=sa.text("'pending'"),
+                "is_active", sa.Boolean(), nullable=False,
+                server_default=sa.text("true"),
             ),
             sa.Column(
-                "role",
-                sa.Enum("admin", "user", "super_admin", name="userrole"),
-                nullable=False,
-                server_default=sa.text("'user'"),
+                "approval_status", approval_status_col,
+                nullable=False, server_default=sa.text("'pending'"),
             ),
-            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-            sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+            sa.Column(
+                "role", role_col,
+                nullable=False, server_default=sa.text("'user'"),
+            ),
+            sa.Column(
+                "created_at", sa.DateTime(), nullable=False,
+                server_default=sa.func.now(),
+            ),
+            sa.Column(
+                "updated_at", sa.DateTime(), nullable=False,
+                server_default=sa.func.now(),
+            ),
             sa.PrimaryKeyConstraint("id"),
         )
         op.create_index(op.f("ix_users_id"), "users", ["id"], unique=False)
