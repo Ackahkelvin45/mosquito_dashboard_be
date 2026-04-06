@@ -20,12 +20,23 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_cols = {c['name'] for c in inspector.get_columns('device_clusters')}
+
     # Add as nullable so existing rows don't violate NOT NULL
-    op.add_column('device_clusters', sa.Column('created_at', sa.DateTime(), nullable=True))
-    op.add_column('device_clusters', sa.Column('updated_at', sa.DateTime(), nullable=True))
+    if 'created_at' not in existing_cols:
+        op.add_column('device_clusters', sa.Column('created_at', sa.DateTime(), nullable=True))
+    if 'updated_at' not in existing_cols:
+        op.add_column('device_clusters', sa.Column('updated_at', sa.DateTime(), nullable=True))
 
     # Backfill existing rows with the current timestamp
-    op.execute("UPDATE device_clusters SET created_at = NOW(), updated_at = NOW() WHERE created_at IS NULL")
+    op.execute(
+        "UPDATE device_clusters SET created_at = NOW() WHERE created_at IS NULL"
+    )
+    op.execute(
+        "UPDATE device_clusters SET updated_at = NOW() WHERE updated_at IS NULL"
+    )
 
     # Now enforce NOT NULL
     op.alter_column('device_clusters', 'created_at', nullable=False)
