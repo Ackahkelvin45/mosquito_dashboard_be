@@ -34,13 +34,13 @@ class DeviceService:
 
     def get_devices(self, name=None, region=None, max_mosquito_count=None,
                     min_mosquito_count=None, created_after=None,
-                    longitude=None, latitude=None, cluster_id=None) -> List[DeviceResponse]:
-        if any(v is not None for v in [name, region, max_mosquito_count, min_mosquito_count,
+                    longitude=None, latitude=None, cluster_id=None, device_uuid=None) -> List[DeviceResponse]:
+        if any(v is not None for v in [name, region, device_uuid, max_mosquito_count, min_mosquito_count,
                                         created_after, longitude, latitude, cluster_id]):
             devices = self.device_repository.filter_devices(
                 name=name, region=region, max_mosquito_count=max_mosquito_count,
                 min_mosquito_count=min_mosquito_count, created_after=created_after,
-                longitude=longitude, latitude=latitude, cluster_id=cluster_id,
+                longitude=longitude, latitude=latitude, cluster_id=cluster_id, device_uuid=device_uuid,
             )
         else:
             devices = self.device_repository.get_all()
@@ -101,15 +101,35 @@ class DeviceService:
             raise HTTPException(status_code=500, detail="Mosquito reading was not created")
         return MosquitoIndividualResponse.model_validate(event.mosquito_reading)
 
-    def get_mosquito_events(self, device_uuid: str) -> List[MosquitoEventResponse]:
+    def get_mosquito_events(
+        self,
+        device_uuid: str,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        search: str | None = None,
+    ) -> List[MosquitoEventResponse]:
         device = self.device_repository.get_by_uuid(device_uuid)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found")
-        events = self.device_repository.get_mosquito_events(device.id)
+        events = self.device_repository.get_mosquito_events(
+            device.id,
+            start_date=start_date,
+            end_date=end_date,
+            search=search,
+        )
         return [MosquitoEventResponse.model_validate(event) for event in events]
     
-    def get_all_mosquito_events(self) -> List[MosquitoEventResponse]:
-        events = self.device_repository.get_all_mosquito_events()
+    def get_all_mosquito_events(
+        self,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        search: str | None = None,
+    ) -> List[MosquitoEventResponse]:
+        events = self.device_repository.get_all_mosquito_events(
+            start_date=start_date,
+            end_date=end_date,
+            search=search,
+        )
         return [MosquitoEventResponse.model_validate(event) for event in events]
 
     def delete_mosquito_event(self, device_uuid: str, event_id: int) -> None:

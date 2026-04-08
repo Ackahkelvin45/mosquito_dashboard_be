@@ -1,10 +1,12 @@
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import or_, func
 from typing import Optional, List
 from app.crud.base import BaseRepository
 from app.device.models import Device,DeviceCluster,SensorDeviceReading,MosquitoEvent,MosquitoIndividualReading
 from app.device.schema import DeviceCreate, DeviceUpdate,SensorDataPayload,MosquitoEventPayload
 from datetime import datetime, timezone
 from fastapi import HTTPException
+from utils.time_range import to_utc_naive
 
 
 class DeviceRepository(BaseRepository[Device]):
@@ -102,6 +104,7 @@ class DeviceRepository(BaseRepository[Device]):
             self,
             region: Optional[str] = None,
             name: Optional[str] = None,
+            device_uuid: Optional[str] = None,
             min_mosquito_count: Optional[int] = None,
             max_mosquito_count: Optional[int] = None,
             latitude: Optional[float] = None,
@@ -115,6 +118,8 @@ class DeviceRepository(BaseRepository[Device]):
             query = query.filter(Device.region.ilike(f"%{region}%"))
         if name:
             query = query.filter(Device.name.ilike(f"%{name}%"))
+        if device_uuid:
+            query = query.filter(Device.device_uuid == device_uuid)
         if min_mosquito_count is not None:
             query = query.filter(Device.total_mosquito_count >= min_mosquito_count)
         if max_mosquito_count is not None:
@@ -193,21 +198,144 @@ class DeviceRepository(BaseRepository[Device]):
     
 
 
-    def get_mosquito_events(self, device_id: int) -> List[MosquitoEvent]:
-        return (
+    def _apply_mosquito_event_filters(
+        self,
+        query,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        search: str | None = None,
+    ):
+        if start_date is not None:
+            start_date = to_utc_naive(start_date)
+        if end_date is not None:
+            end_date = to_utc_naive(end_date)
+        if start_date is not None:
+            query = query.filter(MosquitoEvent.timestamp >= start_date)
+        if end_date is not None:
+            query = query.filter(MosquitoEvent.timestamp <= end_date)
+
+        if search:
+            tokens = [t for t in search.strip().split() if t]
+            for token in tokens:
+                like = f"%{token}%"
+                query = query.filter(
+                    or_(
+                        func.coalesce(Device.device_uuid, "").ilike(like),
+                        func.coalesce(MosquitoIndividualReading.species, "").ilike(like),
+                        func.coalesce(MosquitoIndividualReading.genus, "").ilike(like),
+                        func.coalesce(MosquitoIndividualReading.age_group, "").ilike(like),
+                        func.coalesce(MosquitoIndividualReading.sex, "").ilike(like),
+                    )
+                )
+
+        return query
+
+    def get_mosquito_events(
+        self,
+        device_id: int,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        search: str | None = None,
+    ) -> List[MosquitoEvent]:
+        base_query = (
             self.session.query(MosquitoEvent)
             .filter(MosquitoEvent.device_id == device_id)
+        )
+        base_query = self._apply_mosquito_event_filters(
+            base_query,
+            start_date=start_date,
+            end_date=end_date,
+            search=None,
+        )
+
+        if not search:
+            return (
+                base_query
+                .options(joinedload(MosquitoEvent.mosquito_reading))
+                .order_by(MosquitoEvent.timestamp.desc())
+                .all()
+            )
+
+        # When searching, join related tables for filtering and dedupe via a DISTINCT ON subquery
+        # (required for Postgres correctness).
+        search_query = (
+            self.session.query(MosquitoEvent.id)
+            .select_from(MosquitoEvent)
+            .join(Device, MosquitoEvent.device_id == Device.id)
+            .outerjoin(MosquitoIndividualReading, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
+            .filter(MosquitoEvent.device_id == device_id)
+        )
+        search_query = self._apply_mosquito_event_filters(
+            search_query,
+            start_date=start_date,
+            end_date=end_date,
+            search=search,
+        )
+        ids_subq = (
+            search_query
+            .distinct(MosquitoEvent.id)
+            .order_by(MosquitoEvent.id, MosquitoEvent.timestamp.desc())
+            .subquery()
+        )
+
+        return (
+            self.session.query(MosquitoEvent)
+            .join(ids_subq, MosquitoEvent.id == ids_subq.c.id)
             .options(joinedload(MosquitoEvent.mosquito_reading))
             .order_by(MosquitoEvent.timestamp.desc())
             .all()
         )
 
-    def get_all_mosquito_events(self) -> List[MosquitoEvent]:
+    def get_all_mosquito_events(
+        self,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        search: str | None = None,
+    ) -> List[MosquitoEvent]:
+        base_query = self.session.query(MosquitoEvent)
+        base_query = self._apply_mosquito_event_filters(
+            base_query,
+            start_date=start_date,
+            end_date=end_date,
+            search=None,
+        )
+
+        if not search:
+            return (
+                base_query
+                .options(
+                    joinedload(MosquitoEvent.device),
+                    joinedload(MosquitoEvent.mosquito_reading),
+                )
+                .order_by(MosquitoEvent.timestamp.desc())
+                .all()
+            )
+
+        search_query = (
+            self.session.query(MosquitoEvent.id)
+            .select_from(MosquitoEvent)
+            .join(Device, MosquitoEvent.device_id == Device.id)
+            .outerjoin(MosquitoIndividualReading, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
+        )
+        search_query = self._apply_mosquito_event_filters(
+            search_query,
+            start_date=start_date,
+            end_date=end_date,
+            search=search,
+        )
+        ids_subq = (
+            search_query
+            .distinct(MosquitoEvent.id)
+            .order_by(MosquitoEvent.id, MosquitoEvent.timestamp.desc())
+            .subquery()
+        )
+
         return (
             self.session.query(MosquitoEvent)
+            .join(ids_subq, MosquitoEvent.id == ids_subq.c.id)
             .options(
                 joinedload(MosquitoEvent.device),
-                joinedload(MosquitoEvent.mosquito_reading).joinedload(MosquitoIndividualReading.batch),
+                joinedload(MosquitoEvent.mosquito_reading),
             )
             .order_by(MosquitoEvent.timestamp.desc())
             .all()

@@ -14,8 +14,9 @@ from app.service.device_service import DeviceService
 from app.service.device_cluster_service import DeviceClusterService
 from app.service.email_service import send_researcher_request_email
 from fastapi import status
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List 
+from utils.time_range import compute_datetime_range, TimeRange
 
 
 security = HTTPBearer()
@@ -37,6 +38,7 @@ def get_devices(
     session: Session = Depends(get_db),
     name: Optional[str] = Query(default=None),
     region: Optional[str] = Query(default=None),
+    device_uuid: Optional[str] = Query(default=None),
     max_mosquito_count: Optional[int] = Query(default=None),
     min_mosquito_count: Optional[int] = Query(default=None),
     created_after: Optional[datetime] = Query(default=None),
@@ -47,6 +49,7 @@ def get_devices(
     try:
         return DeviceService(session).get_devices(
             name=name, region=region,
+            device_uuid=device_uuid,
             max_mosquito_count=max_mosquito_count, min_mosquito_count=min_mosquito_count,
             created_after=created_after, longitude=longitude,
             latitude=latitude, cluster_id=cluster_id,
@@ -145,9 +148,25 @@ def ingest_mosquito_event(device_uuid: str, payload: MosquitoEventPayload, sessi
 
 
 @router.get("/uuid/{device_uuid}/mosquito-events", status_code=status.HTTP_200_OK, response_model=List[MosquitoEventResponse], dependencies=[Depends(security)])
-def get_mosquito_events(device_uuid: str, session: Session = Depends(get_db)):
+def get_mosquito_events(
+    device_uuid: str,
+    session: Session = Depends(get_db),
+    start_date: Optional[datetime] = Query(default=None),
+    end_date: Optional[datetime] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    range_: Optional[TimeRange] = Query(default=None, alias="range"),
+    at: Optional[datetime] = Query(default=None),
+):
     try:
-        return DeviceService(session).get_mosquito_events(device_uuid)
+        if start_date is None and end_date is None and range_:
+            window_at = at or datetime.now(timezone.utc)
+            start_date, end_date = compute_datetime_range(range_, window_at)
+        return DeviceService(session).get_mosquito_events(
+            device_uuid,
+            start_date=start_date,
+            end_date=end_date,
+            search=search,
+        )
     except Exception as e:
         raise e
 
