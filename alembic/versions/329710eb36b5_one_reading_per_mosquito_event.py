@@ -1,7 +1,7 @@
 """one reading per mosquito event
 
 Revision ID: 329710eb36b5
-Revises: 6dc280d13de3
+Revises: 3bcadda4a0f6
 Create Date: 2026-04-08
 
 """
@@ -15,7 +15,7 @@ from sqlalchemy import inspect
 
 # revision identifiers, used by Alembic.
 revision: str = "329710eb36b5"
-down_revision: Union[str, Sequence[str], None] = "6dc280d13de3"
+down_revision: Union[str, Sequence[str], None] = "3bcadda4a0f6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -63,4 +63,3 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Non-destructive constraint add; no downgrade.
     pass
-
