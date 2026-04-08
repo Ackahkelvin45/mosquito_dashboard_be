@@ -136,7 +136,7 @@ def get_sensor_readings(device_uuid: str, session: Session = Depends(get_db)):
         raise e
 
 
-@router.post("/uuid/{device_uuid}/mosquito-events", status_code=status.HTTP_201_CREATED, response_model=List[MosquitoIndividualResponse], dependencies=[Depends(security)])
+@router.post("/uuid/{device_uuid}/mosquito-events", status_code=status.HTTP_201_CREATED, response_model=MosquitoIndividualResponse, dependencies=[Depends(security)])
 def ingest_mosquito_event(device_uuid: str, payload: MosquitoEventPayload, session: Session = Depends(get_db)):
     try:
         return DeviceService(session).ingest_mosquito_event(device_uuid, payload)
@@ -148,6 +148,14 @@ def ingest_mosquito_event(device_uuid: str, payload: MosquitoEventPayload, sessi
 def get_mosquito_events(device_uuid: str, session: Session = Depends(get_db)):
     try:
         return DeviceService(session).get_mosquito_events(device_uuid)
+    except Exception as e:
+        raise e
+
+
+@router.delete("/uuid/{device_uuid}/mosquito-events/{event_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(security)])
+def delete_mosquito_event(device_uuid: str, event_id: int, session: Session = Depends(get_db)):
+    try:
+        DeviceService(session).delete_mosquito_event(device_uuid=device_uuid, event_id=event_id)
     except Exception as e:
         raise e
 

@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional, List
 from app.crud.base import BaseRepository
 from app.device.models import Device,DeviceCluster,SensorDeviceReading,MosquitoEvent,MosquitoIndividualReading
@@ -170,23 +170,21 @@ class DeviceRepository(BaseRepository[Device]):
         )
 
     def create_mosquito_event(self, device: Device, payload: MosquitoEventPayload) -> MosquitoEvent:
-        individual_readings = [
-            MosquitoIndividualReading(
-                detection_timestamp=r.detection_timestamp,
-                species=r.species,
-                genus=r.genus,
-                age_group=r.age_group,
-                sex=r.sex,
-            )
-            for r in payload.mosquito_data
-        ]
+        reading_payload = payload.mosquito_reading
+        mosquito_reading = MosquitoIndividualReading(
+            detection_timestamp=reading_payload.detection_timestamp,
+            species=reading_payload.species,
+            genus=reading_payload.genus,
+            age_group=reading_payload.age_group,
+            sex=reading_payload.sex,
+        )
         event = MosquitoEvent(
             device_id=device.id,
             timestamp=payload.timestamp,
-            count=len(individual_readings),
-            individual_readings=individual_readings,
+            count=1,
+            mosquito_reading=mosquito_reading,
         )
-        device.total_mosquito_count = (device.total_mosquito_count or 0) + len(individual_readings)
+        device.total_mosquito_count = (device.total_mosquito_count or 0) + 1
         device.last_activity = payload.timestamp
         self.session.add(event)
         self.session.commit()
@@ -199,6 +197,49 @@ class DeviceRepository(BaseRepository[Device]):
         return (
             self.session.query(MosquitoEvent)
             .filter(MosquitoEvent.device_id == device_id)
+            .options(joinedload(MosquitoEvent.mosquito_reading))
             .order_by(MosquitoEvent.timestamp.desc())
             .all()
         )
+
+    def get_all_mosquito_events(self) -> List[MosquitoEvent]:
+        return (
+            self.session.query(MosquitoEvent)
+            .options(
+                joinedload(MosquitoEvent.device),
+                joinedload(MosquitoEvent.mosquito_reading).joinedload(MosquitoIndividualReading.batch),
+            )
+            .order_by(MosquitoEvent.timestamp.desc())
+            .all()
+        )
+
+    def get_mosquito_event_by_id(self, device_id: int, event_id: int) -> MosquitoEvent | None:
+        return (
+            self.session.query(MosquitoEvent)
+            .filter(MosquitoEvent.id == event_id, MosquitoEvent.device_id == device_id)
+            .first()
+        )
+
+    def delete_mosquito_event(self, device_id: int, event_id: int) -> None:
+        event = self.get_mosquito_event_by_id(device_id=device_id, event_id=event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail="Mosquito event not found")
+
+        # Delete ALL readings tied to this event first (older data may have >1 row per event).
+        readings_deleted = (
+            self.session.query(MosquitoIndividualReading)
+            .filter(MosquitoIndividualReading.batch_id == event.id)
+            .delete(synchronize_session=False)
+        )
+
+        device = self.session.query(Device).filter(Device.id == device_id).first()
+        if device and readings_deleted:
+            device.total_mosquito_count = max(0, (device.total_mosquito_count or 0) - readings_deleted)
+
+        self.session.delete(event)
+        self.session.commit()
+
+
+
+    def get_all_mosquito_readings(self)->List[MosquitoIndividualReading]:
+        return self.session.query(MosquitoIndividualReading).order_by(MosquitoIndividualReading.detection_timestamp.desc()).all()

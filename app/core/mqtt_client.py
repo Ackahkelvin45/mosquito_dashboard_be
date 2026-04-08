@@ -88,40 +88,48 @@ def handle_mosquito_event(db, device: Device, data: dict):
         ]
     }
     """
-    mosquito_data = data.get("mosquito_data", [])
-    if not mosquito_data:
-        logger.info(
-            f"No mosquito data in payload for device {device.device_uuid}"
-        )
+    mosquito_reading = data.get("mosquito_reading")
+    if mosquito_reading is None:
+        mosquito_data = data.get("mosquito_data")
+        if isinstance(mosquito_data, dict):
+            mosquito_reading = mosquito_data
+        elif isinstance(mosquito_data, list):
+            if len(mosquito_data) != 1:
+                logger.error(
+                    f"Expected exactly 1 mosquito reading but got {len(mosquito_data)} "
+                    f"for device {device.device_uuid}"
+                )
+                return
+            mosquito_reading = mosquito_data[0]
+
+    if not isinstance(mosquito_reading, dict):
+        logger.info(f"No mosquito reading in payload for device {device.device_uuid}")
         return
 
     event = MosquitoEvent(
         device_id=device.id,
         timestamp=_parse_timestamp(data.get("timestamp")),
-        count=len(mosquito_data),
+        count=1,
     )
     db.add(event)
     db.flush()
 
-    for mosquito in mosquito_data:
-        individual = MosquitoIndividualReading(
-            batch_id=event.id,
-            detection_timestamp=_parse_timestamp(
-                mosquito.get("detection_timestamp")
-            ),
-            species=mosquito.get("species"),
-            genus=mosquito.get("genus"),
-            age_group=mosquito.get("age_group"),
-            sex=mosquito.get("sex"),
-        )
-        db.add(individual)
+    individual = MosquitoIndividualReading(
+        batch_id=event.id,
+        detection_timestamp=_parse_timestamp(mosquito_reading.get("detection_timestamp")),
+        species=mosquito_reading.get("species"),
+        genus=mosquito_reading.get("genus"),
+        age_group=mosquito_reading.get("age_group"),
+        sex=mosquito_reading.get("sex"),
+    )
+    db.add(individual)
 
-    device.total_mosquito_count = (device.total_mosquito_count or 0) + len(mosquito_data)
+    device.total_mosquito_count = (device.total_mosquito_count or 0) + 1
     device.last_activity = datetime.utcnow()
     db.commit()
     logger.info(
         f"Mosquito event saved for device {device.device_uuid} "
-        f"— {len(mosquito_data)} individual(s)"
+        f"— 1 reading"
     )
 
 

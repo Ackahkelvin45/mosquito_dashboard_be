@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.core.database import engine
 from utils.init_db import create_tables
 from app.authentication.routes import router as authentication_router
+from app.mosquito.routes import router as mosquito_router
 from app.device.routes import router as device_router
 from utils.protected_route import get_current_user
 from app.authentication.schema import UserResponse
@@ -75,6 +76,7 @@ app = create_application()
 
 app.include_router(authentication_router, tags=["authentication"], prefix="/auth")
 app.include_router(device_router, tags=["devices"], prefix="/devices")
+app.include_router(mosquito_router, tags=["mosquito"], prefix="/mosquito")
 
 
 # ---------------------------

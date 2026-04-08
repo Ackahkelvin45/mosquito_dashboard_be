@@ -92,12 +92,14 @@ class DeviceService:
         return [SensorDataResponse.model_validate(r) for r in readings]
 
 
-    def ingest_mosquito_event(self, device_uuid: str, payload: MosquitoEventPayload) -> List[MosquitoIndividualResponse]:
+    def ingest_mosquito_event(self, device_uuid: str, payload: MosquitoEventPayload) -> MosquitoIndividualResponse:
         device = self.device_repository.get_by_uuid(device_uuid)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found")
         event = self.device_repository.create_mosquito_event(device, payload)
-        return [MosquitoIndividualResponse.model_validate(r) for r in event.individual_readings]
+        if not event.mosquito_reading:
+            raise HTTPException(status_code=500, detail="Mosquito reading was not created")
+        return MosquitoIndividualResponse.model_validate(event.mosquito_reading)
 
     def get_mosquito_events(self, device_uuid: str) -> List[MosquitoEventResponse]:
         device = self.device_repository.get_by_uuid(device_uuid)
@@ -105,3 +107,18 @@ class DeviceService:
             raise HTTPException(status_code=404, detail="Device not found")
         events = self.device_repository.get_mosquito_events(device.id)
         return [MosquitoEventResponse.model_validate(event) for event in events]
+    
+    def get_all_mosquito_events(self) -> List[MosquitoEventResponse]:
+        events = self.device_repository.get_all_mosquito_events()
+        return [MosquitoEventResponse.model_validate(event) for event in events]
+
+    def delete_mosquito_event(self, device_uuid: str, event_id: int) -> None:
+        device = self.device_repository.get_by_uuid(device_uuid)
+        if not device:
+            raise HTTPException(status_code=404, detail="Device not found")
+        self.device_repository.delete_mosquito_event(device_id=device.id, event_id=event_id)
+
+
+    def get_all_mosquito_readings(self) -> List[MosquitoIndividualResponse]:
+        readings = self.device_repository.get_all_mosquito_readings()
+        return [MosquitoIndividualResponse.model_validate(r) for r in readings]

@@ -120,8 +120,11 @@ class MosquitoEvent(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     count: Mapped[int] = mapped_column(Integer, default=0)
     device: Mapped["Device"] = relationship("Device", back_populates="mosquito_readings")
-    individual_readings: Mapped[list["MosquitoIndividualReading"]] = relationship(
-        "MosquitoIndividualReading", back_populates="batch", cascade="all, delete-orphan"
+    mosquito_reading: Mapped["MosquitoIndividualReading | None"] = relationship(
+        "MosquitoIndividualReading",
+        back_populates="batch",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self):
@@ -132,13 +135,20 @@ class MosquitoEvent(Base):
 class MosquitoIndividualReading(Base):
     __tablename__ = "mosquito_individual_readings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    batch_id: Mapped[int] = mapped_column(ForeignKey("mosquito_events.id"))
+    # One-to-one: each MosquitoEvent should have exactly one corresponding MosquitoIndividualReading.
+    batch_id: Mapped[int] = mapped_column(ForeignKey("mosquito_events.id"), unique=True, index=True)
     detection_timestamp: Mapped[datetime] = mapped_column(DateTime)
     species: Mapped[str] = mapped_column(String(250), nullable=True)
     genus: Mapped[str] = mapped_column(String(250), nullable=True)
     age_group: Mapped[str] = mapped_column(String(50))
     sex: Mapped[str] = mapped_column(String(50))
-    batch: Mapped["MosquitoEvent"] = relationship("MosquitoEvent", back_populates="individual_readings")
+    batch: Mapped["MosquitoEvent"] = relationship("MosquitoEvent", back_populates="mosquito_reading")
 
     def __repr__(self):
         return f"MosquitoEvent(id={self.id}, species={self.species})"
+    
+    @property
+    def device_uuid(self):
+        if self.batch and self.batch.device:
+            return self.batch.device.device_uuid
+        return None

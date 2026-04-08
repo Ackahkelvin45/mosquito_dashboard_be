@@ -146,7 +146,7 @@ class MosquitoIndividualPayload(BaseModel):
 
 class MosquitoEventPayload(BaseModel):
     timestamp: datetime
-    mosquito_data: list[MosquitoIndividualPayload]=Field(..., description="List of individual mosquito readings in the event")
+    mosquito_reading: MosquitoIndividualPayload = Field(..., description="The mosquito reading for this event")
 
 
 
@@ -154,6 +154,8 @@ class MosquitoEventPayload(BaseModel):
 class MosquitoIndividualResponse(MosquitoIndividualPayload):
     id: int = Field(..., description="ID of the individual mosquito reading")
     batch_id: int = Field(..., description="ID of the mosquito event batch this reading belongs to")
+    device_uuid: Optional[str] = None 
+
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -163,8 +165,9 @@ class MosquitoEventResponse(BaseModel):
     device_id: int = Field(..., description="ID of the device")
     timestamp: datetime = Field(..., description="When the event batch was recorded")
     count: int = Field(..., description="Number of mosquitoes detected in this event")
-    individual_readings: list[MosquitoIndividualResponse] = Field(
-        default=[], description="Individual mosquito detections in this event"
+    mosquito_reading: Optional[MosquitoIndividualResponse] = Field(
+        default=None,
+        description="The single mosquito reading for this event",
     )
 
     model_config = ConfigDict(from_attributes=True)
