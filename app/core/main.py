@@ -9,6 +9,7 @@ from utils.init_db import create_tables
 from app.authentication.routes import router as authentication_router
 from app.mosquito.routes import router as mosquito_router
 from app.device.routes import router as device_router
+from app.dashboard.routes import router as dashboard_router
 from utils.protected_route import get_current_user
 from app.authentication.schema import UserResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -77,6 +78,7 @@ app = create_application()
 app.include_router(authentication_router, tags=["authentication"], prefix="/auth")
 app.include_router(device_router, tags=["devices"], prefix="/devices")
 app.include_router(mosquito_router, tags=["mosquito"], prefix="/mosquito")
+app.include_router(dashboard_router, tags=["dashboard"], prefix="/dashboard")
 
 
 # ---------------------------
