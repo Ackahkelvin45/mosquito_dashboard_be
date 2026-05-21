@@ -7,15 +7,17 @@ from app.device.schema import (
     MosquitoEventPayload, SensorDataPayload, SensorDataResponse,
     MosquitoIndividualPayload, MosquitoIndividualResponse, MosquitoEventResponse,
 )
+from app.device.chart_schema import DeviceChartsResponse
 from app.core.database import get_db
 from sqlalchemy.orm import Session
 from utils.protected_route import get_current_user
 from app.service.device_service import DeviceService
 from app.service.device_cluster_service import DeviceClusterService
+from app.service.device_chart_service import DeviceChartService
 from app.service.email_service import send_researcher_request_email
 from fastapi import status
 from datetime import datetime, timezone
-from typing import Optional, List 
+from typing import Optional, List
 from utils.time_range import compute_datetime_range, TimeRange
 
 
@@ -178,6 +180,18 @@ def delete_mosquito_event(device_uuid: str, event_id: int, session: Session = De
     except Exception as e:
         raise e
 
+
+
+@router.get("/{device_id}/charts", status_code=status.HTTP_200_OK, response_model=DeviceChartsResponse, dependencies=[Depends(security)])
+def get_device_charts(
+    device_id: int,
+    session: Session = Depends(get_db),
+    group_by: str = Query(default="month", pattern="^(hour|day|week|month|year)$"),
+):
+    try:
+        return DeviceChartService(session).get_device_charts(device_id, group_by)
+    except Exception as e:
+        raise e
 
 
 @router.get("/{device_id}", status_code=status.HTTP_200_OK, response_model=DeviceResponse, dependencies=[Depends(security)])
