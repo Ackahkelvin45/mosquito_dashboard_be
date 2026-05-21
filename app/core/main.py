@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI):
         print("MQTT client started")
     except Exception as e:
         print(f"Failed to start MQTT client: {e}")
+        raise e
       
     yield  # app runs here
 

@@ -4,23 +4,25 @@ from datetime import datetime
 from fastapi_mqtt import FastMQTT, MQTTConfig
 from app.device.models import Device, SensorDeviceReading, MosquitoEvent, MosquitoIndividualReading
 from app.core.database import SessionLocal
-import os
+from app.core.config import settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BROKER = os.getenv("MQTT_BROKER", "localhost")
-PORT = int(os.getenv("MQTT_PORT", 1883))
-TOPIC_SENSOR_DATA = os.getenv("TOPIC_SENSOR_DATA", "mosquito_dashboard/+/sensor_data")
-TOPIC_MOSQUITO_COUNT = os.getenv("TOPIC_MOSQUITO_COUNT", "mosquito_dashboard/+/mosquito_data")
-CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "mosquito_dashboard_server")
+BROKER = settings.MQTT_BROKER
+PORT = settings.MQTT_PORT
+TOPIC_SENSOR_DATA = settings.TOPIC_SENSOR_DATA
+TOPIC_MOSQUITO_COUNT = settings.TOPIC_MOSQUITO_COUNT
+CLIENT_ID = settings.MQTT_CLIENT_ID
 
 mqtt_config = MQTTConfig(
     host=BROKER,
     port=PORT,
+    reconnect_retries=-1,
+    reconnect_delay=5,
 )
 
-mqtt = FastMQTT(config=mqtt_config)
+mqtt = FastMQTT(config=mqtt_config, client_id=CLIENT_ID)
 
 
 def _parse_timestamp(value) -> datetime:
@@ -135,12 +137,10 @@ def handle_mosquito_event(db, device: Device, data: dict):
 
 @mqtt.on_connect()
 def on_connect(client, flags, rc, properties):
-    mqtt.client.subscribe(TOPIC_SENSOR_DATA)
-    mqtt.client.subscribe(TOPIC_MOSQUITO_COUNT)
     logger.info(f"Connected to MQTT broker at {BROKER}:{PORT}")
 
 
-@mqtt.on_message()
+@mqtt.subscribe(TOPIC_SENSOR_DATA, TOPIC_MOSQUITO_COUNT)
 async def on_message(client, topic, payload, qos, properties):
     topic_str = topic
 
