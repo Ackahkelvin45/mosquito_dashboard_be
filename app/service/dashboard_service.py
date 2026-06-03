@@ -1,3 +1,4 @@
+import math
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,10 @@ from app.dashboard.schema import (
     DashboardSensorStatusChart,
     BreakdownItem,
     DashboardBreakdown,
+    CorrelationDataPoint,
+    DashboardCorrelationChart,
+    GenusHeatmapCell,
+    DashboardGenusHeatmap,
 )
 
 # Rolling window for each group_by value
@@ -49,6 +54,8 @@ class DashboardService:
         region_group_by: str = "week",
         sensor_status_group_by: str = "week",
         breakdown_group_by: str = "week",
+        correlation_group_by: str = "week",
+        genus_heatmap_group_by: str = "week",
         region: Optional[str] = None,
         cluster_id: Optional[int] = None,
         device_id: Optional[int] = None,
@@ -67,6 +74,8 @@ class DashboardService:
         region_group_by = region_group_by.lower() if region_group_by in VALID_GROUP_BY else "week"
         sensor_status_group_by = sensor_status_group_by.lower() if sensor_status_group_by in VALID_GROUP_BY else "week"
         breakdown_group_by = breakdown_group_by.lower() if breakdown_group_by in VALID_GROUP_BY else "week"
+        correlation_group_by = correlation_group_by.lower() if correlation_group_by in VALID_GROUP_BY else "week"
+        genus_heatmap_group_by = genus_heatmap_group_by.lower() if genus_heatmap_group_by in VALID_GROUP_BY else "week"
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -111,6 +120,16 @@ class DashboardService:
         b_start = now - _WINDOW[breakdown_group_by]
         breakdown = self._compute_breakdown(device_ids, b_start, b_end, breakdown_group_by)
 
+        # ── Correlation Chart (own window) ──────────────────────────────
+        cor_end   = now
+        cor_start = now - _WINDOW[correlation_group_by]
+        correlation_chart = self._compute_correlation_chart(device_ids, cor_start, cor_end, correlation_group_by)
+
+        # ── Genus Heatmap (own window) ──────────────────────────────────
+        gh_end   = now
+        gh_start = now - _WINDOW[genus_heatmap_group_by]
+        genus_heatmap = self._compute_genus_heatmap(device_ids, gh_start, gh_end, genus_heatmap_group_by)
+
         return DashboardResponse(
             totals=totals,
             chart=chart,
@@ -118,6 +137,8 @@ class DashboardService:
             region_chart=region_chart,
             sensor_status_chart=sensor_status_chart,
             breakdown=breakdown,
+            correlation_chart=correlation_chart,
+            genus_heatmap=genus_heatmap,
             region=region,
             cluster_id=cluster_id,
             device_id=device_id,
@@ -394,6 +415,185 @@ class DashboardService:
             genus=get_breakdown_for_column(MosquitoIndividualReading.genus),
             species=get_breakdown_for_column(MosquitoIndividualReading.species),
             age_group=get_breakdown_for_column(MosquitoIndividualReading.age_group),
+            group_by=group_by,
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+    # ── Correlation Chart ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _pearson(xs: list[float], ys: list[float]) -> Optional[float]:
+        """Pearson correlation coefficient. Returns None when undefined
+        (<2 points or zero variance in either variable)."""
+        n = len(xs)
+        if n < 2:
+            return None
+        sum_x = sum(xs)
+        sum_y = sum(ys)
+        sum_xy = sum(x * y for x, y in zip(xs, ys))
+        sum_x2 = sum(x * x for x in xs)
+        sum_y2 = sum(y * y for y in ys)
+        numerator = n * sum_xy - sum_x * sum_y
+        denominator_sq = (n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)
+        if denominator_sq <= 0:
+            return None
+        return round(numerator / math.sqrt(denominator_sq), 4)
+
+    def _compute_correlation_chart(
+        self,
+        device_ids: list[int],
+        window_start: datetime,
+        window_end: datetime,
+        group_by: str,
+    ) -> DashboardCorrelationChart:
+        bucket_delta, label_fmt = _BUCKET[group_by]
+
+        def bucket_key(ts: datetime) -> datetime:
+            ts = ts.replace(tzinfo=None) if ts.tzinfo else ts
+            n = int((ts - window_start).total_seconds() // bucket_delta.total_seconds())
+            return window_start + n * bucket_delta
+
+        # Ordered empty buckets
+        counts: dict[datetime, int] = {}
+        temps: dict[datetime, list] = {}
+        hums: dict[datetime, list] = {}
+        cursor = window_start
+        while cursor <= window_end:
+            counts[cursor] = 0
+            temps[cursor] = []
+            hums[cursor] = []
+            cursor += bucket_delta
+
+        # Mosquito counts per bucket
+        event_q = self.session.query(MosquitoEvent).filter(
+            MosquitoEvent.timestamp >= window_start,
+            MosquitoEvent.timestamp <= window_end,
+        )
+        if device_ids:
+            event_q = event_q.filter(MosquitoEvent.device_id.in_(device_ids))
+        for event in event_q.all():
+            key = bucket_key(event.timestamp)
+            if key in counts:
+                counts[key] += event.count
+
+        # Sensor readings per bucket (external temperature & humidity)
+        reading_q = self.session.query(SensorDeviceReading).filter(
+            SensorDeviceReading.timestamp >= window_start,
+            SensorDeviceReading.timestamp <= window_end,
+        )
+        if device_ids:
+            reading_q = reading_q.filter(SensorDeviceReading.device_id.in_(device_ids))
+        for r in reading_q.all():
+            key = bucket_key(r.timestamp)
+            if key not in temps:
+                continue
+            if r.external_temperature is not None:
+                temps[key].append(r.external_temperature)
+            if r.external_humidity is not None:
+                hums[key].append(r.external_humidity)
+
+        data: list[CorrelationDataPoint] = []
+        temp_x: list[float] = []
+        temp_y: list[float] = []
+        hum_x: list[float] = []
+        hum_y: list[float] = []
+        for ts in sorted(counts.keys()):
+            count = counts[ts]
+            temp_avg = round(sum(temps[ts]) / len(temps[ts]), 2) if temps[ts] else None
+            hum_avg = round(sum(hums[ts]) / len(hums[ts]), 2) if hums[ts] else None
+            data.append(
+                CorrelationDataPoint(
+                    label=ts.strftime(label_fmt),
+                    timestamp=ts,
+                    mosquito_count=count,
+                    temperature=temp_avg,
+                    humidity=hum_avg,
+                )
+            )
+            # Only correlate buckets where the sensor value exists.
+            if temp_avg is not None:
+                temp_x.append(count)
+                temp_y.append(temp_avg)
+            if hum_avg is not None:
+                hum_x.append(count)
+                hum_y.append(hum_avg)
+
+        return DashboardCorrelationChart(
+            data=data,
+            temperature_correlation=self._pearson(temp_x, temp_y),
+            humidity_correlation=self._pearson(hum_x, hum_y),
+            group_by=group_by,
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+    # ── Genus Heatmap ───────────────────────────────────────────────────────────
+
+    def _compute_genus_heatmap(
+        self,
+        device_ids: list[int],
+        window_start: datetime,
+        window_end: datetime,
+        group_by: str,
+    ) -> DashboardGenusHeatmap:
+        bucket_delta, label_fmt = _BUCKET[group_by]
+
+        def bucket_key(ts: datetime) -> datetime:
+            ts = ts.replace(tzinfo=None) if ts.tzinfo else ts
+            n = int((ts - window_start).total_seconds() // bucket_delta.total_seconds())
+            return window_start + n * bucket_delta
+
+        # Ordered time buckets (column axis)
+        bucket_list: list[datetime] = []
+        cursor = window_start
+        while cursor <= window_end:
+            bucket_list.append(cursor)
+            cursor += bucket_delta
+        bucket_set = set(bucket_list)
+
+        q = (
+            self.session.query(
+                func.coalesce(MosquitoIndividualReading.genus, "Unknown"),
+                MosquitoEvent.timestamp,
+                MosquitoEvent.count,
+            )
+            .join(MosquitoEvent, MosquitoEvent.id == MosquitoIndividualReading.batch_id)
+            .filter(
+                MosquitoEvent.timestamp >= window_start,
+                MosquitoEvent.timestamp <= window_end,
+            )
+        )
+        if device_ids:
+            q = q.filter(MosquitoEvent.device_id.in_(device_ids))
+
+        grid: dict[tuple, int] = {}
+        genera: set[str] = set()
+        for genus, ts, count in q.all():
+            genus = (str(genus).strip() or "Unknown")
+            key = bucket_key(ts)
+            if key not in bucket_set:
+                # ts maps outside the window's bucket range; skip defensively.
+                continue
+            genera.add(genus)
+            grid[(genus, key)] = grid.get((genus, key), 0) + (count or 0)
+
+        ordered_genera = sorted(genera)
+        cells = [
+            GenusHeatmapCell(
+                genus=genus,
+                label=ts.strftime(label_fmt),
+                timestamp=ts,
+                count=grid.get((genus, ts), 0),
+            )
+            for genus in ordered_genera
+            for ts in bucket_list
+        ]
+
+        return DashboardGenusHeatmap(
+            genera=ordered_genera,
+            buckets=[ts.strftime(label_fmt) for ts in bucket_list],
+            data=cells,
             group_by=group_by,
             window_start=window_start,
             window_end=window_end,

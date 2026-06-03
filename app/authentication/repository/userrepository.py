@@ -21,6 +21,12 @@ class UserRepository(BaseRepository[User]):
 
     def get_user_by_id(self, user_id: int) -> User | None:
         return self.session.query(User).filter(User.id == user_id).first()
+
+    def update_password(self, user: User, hashed_password: str) -> User:
+        user.hashed_password = hashed_password
+        self.session.commit()
+        self.session.refresh(user)
+        return user
     
 
     def get_all_users(self) -> list[User]:

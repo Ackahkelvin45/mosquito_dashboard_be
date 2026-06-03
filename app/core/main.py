@@ -76,6 +76,19 @@ def create_application() -> FastAPI:
 
 app = create_application()
 
+
+@app.middleware("http")
+async def strip_trailing_slash(request, call_next):
+    # The frontend appends a trailing slash to collection URLs (e.g. /auth/researcher-requests/),
+    # but routes are registered without one. FastAPI's default behaviour is to 307-redirect to the
+    # no-slash path, and browsers drop CORS headers across that redirect — surfacing as a "CORS error".
+    # Normalising the path here avoids the redirect entirely for every endpoint.
+    path = request.scope.get("path", "")
+    if len(path) > 1 and path.endswith("/"):
+        request.scope["path"] = path.rstrip("/")
+    return await call_next(request)
+
+
 app.include_router(authentication_router, tags=["authentication"], prefix="/auth")
 app.include_router(device_router, tags=["devices"], prefix="/devices")
 app.include_router(mosquito_router, tags=["mosquito"], prefix="/mosquito")

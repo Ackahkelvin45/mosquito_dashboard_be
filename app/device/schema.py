@@ -1,8 +1,12 @@
-from pydantic import BaseModel, EmailStr,Field,field_validator,ConfigDict
+from pydantic import BaseModel, EmailStr,Field,field_validator,ConfigDict,computed_field
 from typing import Union,Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import uuid
 from app.authentication.schema import UserResponse
+
+
+# A device is considered active if it has reported activity within this window.
+ACTIVE_WINDOW_HOURS = 24
 
 
 
@@ -106,6 +110,20 @@ class DeviceResponse(DeviceBase):
     total_mosquito_count: int = Field(...,description="Total mosquito count recorded by the device")
     cluster_id: Optional[int] = Field(None, description="ID of the device cluster this device belongs to")
     latest_reading: Optional[SensorDataResponse] = Field(None, description="Latest sensor reading from the device")
+
+    @computed_field(
+        description=f"Active if the device reported activity within the last {ACTIVE_WINDOW_HOURS}h; inactive if it never reported or has been silent longer.",
+    )
+    @property
+    def is_active(self) -> bool:
+        if not self.last_activity:
+            return False
+        last = self.last_activity
+        now = datetime.now(timezone.utc)
+        # last_activity may be stored timezone-naive; compare on the same basis.
+        if last.tzinfo is None:
+            now = now.replace(tzinfo=None)
+        return (now - last) <= timedelta(hours=ACTIVE_WINDOW_HOURS)
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -68,6 +68,42 @@ class UserLogout(BaseModel):
     message: str = Field(...,description="Message of the user")
 
 
+class MessageResponse(BaseModel):
+    message: str = Field(...,description="Result message")
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr = Field(...,description="Email of the user requesting a password reset")
+
+
+class VerifyOTPRequest(BaseModel):
+    email: EmailStr = Field(...,description="Email of the user")
+    otp: str = Field(...,min_length=6, max_length=6, description="One-time password sent to the user's email")
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr = Field(...,description="Email of the user")
+    otp: str = Field(...,min_length=6, max_length=6, description="One-time password sent to the user's email")
+    new_password: str = Field(...,min_length=8, max_length=50, description="New password of the user")
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password(cls, value:str) -> str:
+        if len(value) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+
+        if not any(char.isdigit() for char in value):
+            raise ValueError("Password must contain at least one number")
+
+        if not any(char.isalpha() for char in value):
+            raise ValueError("Password must contain at least one letter")
+
+        if not any(char.isupper() for char in value):
+            raise ValueError("Password must contain at least one uppercase letter")
+
+        return value
+
+
 
 
 

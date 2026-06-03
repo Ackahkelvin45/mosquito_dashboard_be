@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 from typing import List
 
+from app.core.pagination import Page, paginate
 from app.device.repository.device_repository import DeviceRepository
 from app.device.schema import (
     DeviceCreate, DeviceResponse, DeviceUpdate,
@@ -32,19 +33,26 @@ class DeviceService:
             raise HTTPException(status_code=404, detail="Device not found")
         return DeviceResponse.model_validate(device)
 
-    def get_devices(self, name=None, region=None, max_mosquito_count=None,
+    def get_devices(self, page: int = 1, page_size: int = 20,
+                    name=None, region=None, max_mosquito_count=None,
                     min_mosquito_count=None, created_after=None,
-                    longitude=None, latitude=None, cluster_id=None, device_uuid=None) -> List[DeviceResponse]:
+                    longitude=None, latitude=None, cluster_id=None, device_uuid=None,
+                    trap_status=None) -> Page[DeviceResponse]:
         if any(v is not None for v in [name, region, device_uuid, max_mosquito_count, min_mosquito_count,
-                                        created_after, longitude, latitude, cluster_id]):
+                                        created_after, longitude, latitude, cluster_id, trap_status]):
             devices = self.device_repository.filter_devices(
                 name=name, region=region, max_mosquito_count=max_mosquito_count,
                 min_mosquito_count=min_mosquito_count, created_after=created_after,
                 longitude=longitude, latitude=latitude, cluster_id=cluster_id, device_uuid=device_uuid,
+                trap_status=trap_status,
             )
         else:
             devices = self.device_repository.get_all()
-        return [DeviceResponse.model_validate(d) for d in devices]
+        sliced, total, total_pages = paginate(devices, page, page_size)
+        return Page[DeviceResponse](
+            items=[DeviceResponse.model_validate(d) for d in sliced],
+            total=total, page=page, page_size=page_size, total_pages=total_pages,
+        )
 
     def get_device_by_id(self, device_id: int) -> DeviceResponse:
         device = self.device_repository.get_by_id(device_id)
@@ -84,12 +92,16 @@ class DeviceService:
         reading = self.device_repository.create_sensor_reading(device, payload)
         return SensorDataResponse.model_validate(reading)
 
-    def get_sensor_readings(self, device_uuid: str) -> List[SensorDataResponse]:
+    def get_sensor_readings(self, device_uuid: str, page: int = 1, page_size: int = 20) -> Page[SensorDataResponse]:
         device = self.device_repository.get_by_uuid(device_uuid)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found")
         readings = self.device_repository.get_sensor_readings(device.id)
-        return [SensorDataResponse.model_validate(r) for r in readings]
+        sliced, total, total_pages = paginate(readings, page, page_size)
+        return Page[SensorDataResponse](
+            items=[SensorDataResponse.model_validate(r) for r in sliced],
+            total=total, page=page, page_size=page_size, total_pages=total_pages,
+        )
 
 
     def ingest_mosquito_event(self, device_uuid: str, payload: MosquitoEventPayload) -> MosquitoIndividualResponse:
@@ -104,10 +116,12 @@ class DeviceService:
     def get_mosquito_events(
         self,
         device_uuid: str,
+        page: int = 1,
+        page_size: int = 20,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
         search: str | None = None,
-    ) -> List[MosquitoEventResponse]:
+    ) -> Page[MosquitoEventResponse]:
         device = self.device_repository.get_by_uuid(device_uuid)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found")
@@ -117,20 +131,38 @@ class DeviceService:
             end_date=end_date,
             search=search,
         )
-        return [MosquitoEventResponse.model_validate(event) for event in events]
-    
+        sliced, total, total_pages = paginate(events, page, page_size)
+        return Page[MosquitoEventResponse](
+            items=[MosquitoEventResponse.model_validate(event) for event in sliced],
+            total=total, page=page, page_size=page_size, total_pages=total_pages,
+        )
+
     def get_all_mosquito_events(
         self,
+        page: int = 1,
+        page_size: int = 20,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
         search: str | None = None,
-    ) -> List[MosquitoEventResponse]:
+        region: str | None = None,
+        device_uuids: List[str] | None = None,
+        genus: str | None = None,
+        species: str | None = None,
+    ) -> Page[MosquitoEventResponse]:
         events = self.device_repository.get_all_mosquito_events(
             start_date=start_date,
             end_date=end_date,
             search=search,
+            region=region,
+            device_uuids=device_uuids,
+            genus=genus,
+            species=species,
         )
-        return [MosquitoEventResponse.model_validate(event) for event in events]
+        sliced, total, total_pages = paginate(events, page, page_size)
+        return Page[MosquitoEventResponse](
+            items=[MosquitoEventResponse.model_validate(event) for event in sliced],
+            total=total, page=page, page_size=page_size, total_pages=total_pages,
+        )
 
     def delete_mosquito_event(self, device_uuid: str, event_id: int) -> None:
         device = self.device_repository.get_by_uuid(device_uuid)

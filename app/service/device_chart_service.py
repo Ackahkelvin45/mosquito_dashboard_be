@@ -137,26 +137,33 @@ class DeviceChartService:
         buckets: dict[datetime, defaultdict] = {
             ts: defaultdict(int) for ts in self._make_buckets(window_start, window_end, group_by)
         }
+        series_keys: set[str] = set()
 
         for event, reading in events_with_readings:
             key = self._bucket_key(event.timestamp, window_start, bucket_delta)
             if key in buckets:
-                age = (reading.age_group or "unknown").lower().strip()
-                sex = (reading.sex or "unknown").lower().strip()
-                buckets[key][(age, sex)] += event.count
+                age = (reading.age_group or "").lower().strip() or "unknown"
+                sex = (reading.sex or "").lower().strip() or "unknown"
+                combo = f"{age}_{sex}"
+                buckets[key][combo] += event.count
+                series_keys.add(combo)
 
+        ordered_keys = sorted(series_keys)
         data = [
             MosquitoTrendPoint(
                 label=ts.strftime(label_fmt),
                 timestamp=ts,
-                young_male=cats.get(("young", "male"), 0),
-                old_male=cats.get(("old", "male"), 0),
-                young_female=cats.get(("young", "female"), 0),
-                old_female=cats.get(("old", "female"), 0),
+                series={k: cats.get(k, 0) for k in ordered_keys},
             )
             for ts, cats in sorted(buckets.items())
         ]
-        return MosquitoTrendChart(data=data, group_by=group_by, window_start=window_start, window_end=window_end)
+        return MosquitoTrendChart(
+            data=data,
+            series_keys=ordered_keys,
+            group_by=group_by,
+            window_start=window_start,
+            window_end=window_end,
+        )
 
     # ── Chart 3: MosquitoGenderChart ─────────────────────────────────────────
 

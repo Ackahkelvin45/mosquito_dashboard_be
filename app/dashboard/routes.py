@@ -79,6 +79,14 @@ def get_dashboard(
         default="week",
         description=f"Window for mosquito breakdown. {_GROUP_BY_DESC}",
     ),
+    correlation_group_by: Literal["hour", "day", "week", "month"] = Query(
+        default="week",
+        description=f"Window + bucket granularity for the mosquito vs temperature/humidity correlation chart. {_GROUP_BY_DESC}",
+    ),
+    genus_heatmap_group_by: Literal["hour", "day", "week", "month"] = Query(
+        default="week",
+        description=f"Window + bucket granularity for the genus distribution heatmap. {_GROUP_BY_DESC}",
+    ),
     region: Optional[str] = Query(
         default=None,
         description="Filter devices by region (case-insensitive partial match).",
@@ -100,6 +108,8 @@ def get_dashboard(
             region_group_by=region_group_by,
             sensor_status_group_by=sensor_status_group_by,
             breakdown_group_by=breakdown_group_by,
+            correlation_group_by=correlation_group_by,
+            genus_heatmap_group_by=genus_heatmap_group_by,
             region=region,
             cluster_id=cluster_id,
             device_id=device_id,

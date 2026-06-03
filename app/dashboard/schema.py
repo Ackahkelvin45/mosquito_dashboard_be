@@ -118,6 +118,60 @@ class DashboardBreakdown(BaseModel):
     window_end: datetime = Field(..., description="Window end")
 
 
+class CorrelationDataPoint(BaseModel):
+    """One time bucket pairing mosquito activity with ambient conditions."""
+    label: str = Field(..., description="Bucket label on the chart x-axis")
+    timestamp: datetime = Field(..., description="Start of the time bucket (UTC)")
+    mosquito_count: int = Field(..., description="Mosquito count for this bucket")
+    temperature: Optional[float] = Field(
+        None, description="Average external temperature in this bucket (°C); null if no readings"
+    )
+    humidity: Optional[float] = Field(
+        None, description="Average external humidity in this bucket (%); null if no readings"
+    )
+
+
+class DashboardCorrelationChart(BaseModel):
+    """
+    Correlation between mosquito counts and ambient temperature/humidity per bucket.
+    `*_correlation` are Pearson coefficients in [-1, 1] over buckets where the
+    respective sensor value exists; null when there are <2 points or zero variance.
+    """
+    data: List[CorrelationDataPoint] = Field(
+        default=[], description="Per-bucket mosquito count alongside avg temperature/humidity"
+    )
+    temperature_correlation: Optional[float] = Field(
+        None, description="Pearson r between mosquito_count and temperature"
+    )
+    humidity_correlation: Optional[float] = Field(
+        None, description="Pearson r between mosquito_count and humidity"
+    )
+    group_by: str = Field(..., description="Rolling window + bucket granularity applied")
+    window_start: datetime = Field(..., description="Window start (UTC)")
+    window_end: datetime = Field(..., description="Window end (UTC)")
+
+
+class GenusHeatmapCell(BaseModel):
+    """A single genus × time-bucket cell in the heatmap grid."""
+    genus: str = Field(..., description="Genus name (row)")
+    label: str = Field(..., description="Time bucket label (column)")
+    timestamp: datetime = Field(..., description="Start of the time bucket (UTC)")
+    count: int = Field(..., description="Mosquito count for this genus in this bucket")
+
+
+class DashboardGenusHeatmap(BaseModel):
+    """
+    Genus distribution over time as a dense heatmap grid.
+    `data` contains one cell for every (genus × bucket) pair, including zeros.
+    """
+    genera: List[str] = Field(default=[], description="Distinct genera present (row axis)")
+    buckets: List[str] = Field(default=[], description="Ordered time bucket labels (column axis)")
+    data: List[GenusHeatmapCell] = Field(default=[], description="Full genus × bucket grid")
+    group_by: str = Field(..., description="Rolling window + bucket granularity applied")
+    window_start: datetime = Field(..., description="Window start (UTC)")
+    window_end: datetime = Field(..., description="Window end (UTC)")
+
+
 class DashboardResponse(BaseModel):
     """Unified dashboard — totals and chart each have their own independent window."""
     totals: DashboardTotals
@@ -126,6 +180,8 @@ class DashboardResponse(BaseModel):
     region_chart: DashboardRegionChart
     sensor_status_chart: DashboardSensorStatusChart
     breakdown: DashboardBreakdown
+    correlation_chart: DashboardCorrelationChart
+    genus_heatmap: DashboardGenusHeatmap
     # Device filters echoed back
     region: Optional[str] = Field(None, description="Region filter applied")
     cluster_id: Optional[int] = Field(None, description="Cluster filter applied")

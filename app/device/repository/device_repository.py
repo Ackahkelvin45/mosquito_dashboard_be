@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, func
+from sqlalchemy import or_, and_, func
 from typing import Optional, List
 from app.crud.base import BaseRepository
 from app.device.models import Device,DeviceCluster,SensorDeviceReading,MosquitoEvent,MosquitoIndividualReading
@@ -111,6 +111,7 @@ class DeviceRepository(BaseRepository[Device]):
             longitude: Optional[float] = None,
             cluster_id: Optional[int] = None,
             created_after: Optional[datetime] = None,
+            trap_status: Optional[bool] = None,
     ) -> List[Device]:
         query = self.session.query(Device)
 
@@ -132,6 +133,27 @@ class DeviceRepository(BaseRepository[Device]):
             query = query.filter(Device.created_at >= created_after)
         if cluster_id is not None:
             query = query.filter(Device.cluster_id == cluster_id)
+        if trap_status is not None:
+            # "On/off" reflects the trap_status of each device's most recent sensor reading.
+            latest_reading = (
+                self.session.query(
+                    SensorDeviceReading.device_id,
+                    func.max(SensorDeviceReading.timestamp).label("max_ts"),
+                )
+                .group_by(SensorDeviceReading.device_id)
+                .subquery()
+            )
+            query = (
+                query.join(latest_reading, latest_reading.c.device_id == Device.id)
+                .join(
+                    SensorDeviceReading,
+                    and_(
+                        SensorDeviceReading.device_id == Device.id,
+                        SensorDeviceReading.timestamp == latest_reading.c.max_ts,
+                    ),
+                )
+                .filter(SensorDeviceReading.trap_status == trap_status)
+            )
 
         return query.all()
     
@@ -204,6 +226,10 @@ class DeviceRepository(BaseRepository[Device]):
         start_date: datetime | None = None,
         end_date: datetime | None = None,
         search: str | None = None,
+        region: str | None = None,
+        device_uuids: List[str] | None = None,
+        genus: str | None = None,
+        species: str | None = None,
     ):
         if start_date is not None:
             start_date = to_utc_naive(start_date)
@@ -213,6 +239,15 @@ class DeviceRepository(BaseRepository[Device]):
             query = query.filter(MosquitoEvent.timestamp >= start_date)
         if end_date is not None:
             query = query.filter(MosquitoEvent.timestamp <= end_date)
+
+        if region:
+            query = query.filter(Device.region.ilike(f"%{region}%"))
+        if device_uuids:
+            query = query.filter(Device.device_uuid.in_(device_uuids))
+        if genus:
+            query = query.filter(MosquitoIndividualReading.genus.ilike(f"%{genus}%"))
+        if species:
+            query = query.filter(MosquitoIndividualReading.species.ilike(f"%{species}%"))
 
         if search:
             tokens = [t for t in search.strip().split() if t]
@@ -291,16 +326,20 @@ class DeviceRepository(BaseRepository[Device]):
         start_date: datetime | None = None,
         end_date: datetime | None = None,
         search: str | None = None,
+        region: str | None = None,
+        device_uuids: List[str] | None = None,
+        genus: str | None = None,
+        species: str | None = None,
     ) -> List[MosquitoEvent]:
-        base_query = self.session.query(MosquitoEvent)
-        base_query = self._apply_mosquito_event_filters(
-            base_query,
-            start_date=start_date,
-            end_date=end_date,
-            search=None,
-        )
+        needs_join = bool(search or region or device_uuids or genus or species)
 
-        if not search:
+        if not needs_join:
+            base_query = self.session.query(MosquitoEvent)
+            base_query = self._apply_mosquito_event_filters(
+                base_query,
+                start_date=start_date,
+                end_date=end_date,
+            )
             return (
                 base_query
                 .options(
@@ -322,6 +361,10 @@ class DeviceRepository(BaseRepository[Device]):
             start_date=start_date,
             end_date=end_date,
             search=search,
+            region=region,
+            device_uuids=device_uuids,
+            genus=genus,
+            species=species,
         )
         ids_subq = (
             search_query

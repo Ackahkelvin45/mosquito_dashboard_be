@@ -1,10 +1,11 @@
-from fastapi import APIRouter,Depends,BackgroundTasks
+from fastapi import APIRouter,Depends,BackgroundTasks,Query
 from fastapi.security import HTTPBearer
 from app.authentication.models import User
-from app.authentication.schema import UserCreate, UserLogin, UserLogout, UserResponse, UserUpdate,UserLoginResponse,ResearcherRequestCreate,ResearcherRequestResponse,UpdateResearcherRequest
+from app.core.pagination import Page
+from app.authentication.schema import UserCreate, UserLogin, UserLogout, UserResponse, UserUpdate,UserLoginResponse,ResearcherRequestCreate,ResearcherRequestResponse,UpdateResearcherRequest,ForgotPasswordRequest,VerifyOTPRequest,ResetPasswordRequest,MessageResponse
 from app.core.database import get_db
 from sqlalchemy.orm import Session
-from app.service.email_service import send_welcome_email,send_researcher_request_email,send_researcher_approved_email,send_researcher_declined_email
+from app.service.email_service import send_welcome_email,send_researcher_request_email,send_researcher_approved_email,send_researcher_declined_email,send_password_reset_otp_email
 from utils.protected_route import get_current_user
 
 from app.service.user_service import UserService
@@ -54,8 +55,42 @@ def refresh_token(refresh_token: str,session: Session=Depends(get_db)):
         raise e
     
 
-@router.get("/users",status_code=status.HTTP_200_OK,response_model=list[UserResponse])
+@router.post("/forgot-password",status_code=status.HTTP_200_OK,response_model=MessageResponse)
+def forgot_password(forgot_details: ForgotPasswordRequest,background_tasks:BackgroundTasks,session: Session=Depends(get_db)):
+    try:
+        user_service = UserService(session)
+        result = user_service.forgot_password(forgot_details.email)
+        if result:
+            background_tasks.add_task(send_password_reset_otp_email, result["email"], result["first_name"], result["otp"])
+        return MessageResponse(message="If an account with that email exists, a verification code has been sent.")
+    except Exception as e:
+        raise e
+
+
+@router.post("/verify-otp",status_code=status.HTTP_200_OK,response_model=MessageResponse)
+def verify_otp(verify_details: VerifyOTPRequest,session: Session=Depends(get_db)):
+    try:
+        user_service = UserService(session)
+        user_service.verify_otp(verify_details.email, verify_details.otp)
+        return MessageResponse(message="OTP verified successfully.")
+    except Exception as e:
+        raise e
+
+
+@router.post("/reset-password",status_code=status.HTTP_200_OK,response_model=MessageResponse)
+def reset_password(reset_details: ResetPasswordRequest,session: Session=Depends(get_db)):
+    try:
+        user_service = UserService(session)
+        user_service.reset_password(reset_details.email, reset_details.otp, reset_details.new_password)
+        return MessageResponse(message="Password reset successfully.")
+    except Exception as e:
+        raise e
+
+
+@router.get("/users",status_code=status.HTTP_200_OK,response_model=Page[UserResponse])
 def get_users(session: Session = Depends(get_db),
+              page: int = Query(default=1, ge=1),
+              page_size: int = Query(default=20, ge=1, le=100),
               email: str = None,
               name: str = None,
               role: str = None,
@@ -64,6 +99,8 @@ def get_users(session: Session = Depends(get_db),
     try:
         user_service = UserService(session)
         return user_service.get_users(
+            page=page,
+            page_size=page_size,
             email=email,
             name=name,
             role=role,
@@ -84,11 +121,13 @@ def get_user_by_id(user_id: int, session: Session = Depends(get_db)):
     
 
 
-@router.get("/researcher-requests",status_code=status.HTTP_200_OK,response_model=list[ResearcherRequestResponse])
-def get_researcher_requests(session: Session = Depends(get_db)):
+@router.get("/researcher-requests",status_code=status.HTTP_200_OK,response_model=Page[ResearcherRequestResponse])
+def get_researcher_requests(session: Session = Depends(get_db),
+                            page: int = Query(default=1, ge=1),
+                            page_size: int = Query(default=20, ge=1, le=100)):
     try:
         researcher_request_service = ResearcherRequestService(session)
-        return researcher_request_service.get_reseachers_requests()
+        return researcher_request_service.get_reseachers_requests(page=page, page_size=page_size)
     except Exception as e:
         raise e
 

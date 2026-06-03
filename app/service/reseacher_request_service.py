@@ -1,5 +1,6 @@
 from app.authentication.repository.researcher_request_repository import ResearcherRequestRepository
 from app.authentication.schema import ResearcherRequestCreate, ResearcherRequestResponse,UpdateResearcherRequest
+from app.core.pagination import Page, paginate
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.authentication.enums import ResearcherRequestStatus
@@ -11,13 +12,17 @@ class ResearcherRequestService:
     def __init__(self, session: Session):
         self.researcher_request_repository = ResearcherRequestRepository(session)
 
-    def get_reseachers_requests(self) -> list[ResearcherRequestResponse]:
+    def get_reseachers_requests(self, page: int = 1, page_size: int = 20) -> Page[ResearcherRequestResponse]:
         requests = self.researcher_request_repository.get_researcher_requests()
-        return [ResearcherRequestResponse.model_validate(r) for r in requests]
+        sliced, total, total_pages = paginate(requests, page, page_size)
+        return Page[ResearcherRequestResponse](
+            items=[ResearcherRequestResponse.model_validate(r) for r in sliced],
+            total=total, page=page, page_size=page_size, total_pages=total_pages,
+        )
 
     # Backwards-compatible alias (older route typo)
-    def get_reseachers_request(self) -> list[ResearcherRequestResponse]:
-        return self.get_reseachers_requests()
+    def get_reseachers_request(self, page: int = 1, page_size: int = 20) -> Page[ResearcherRequestResponse]:
+        return self.get_reseachers_requests(page=page, page_size=page_size)
 
     def create_researcher_request(self, request_data: ResearcherRequestCreate) -> ResearcherRequestResponse:
         researcher_request = self.researcher_request_repository.create_researcher_request(request_data)

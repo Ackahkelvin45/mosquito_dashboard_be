@@ -80,3 +80,19 @@ class ResearcherRequest(Base):
 
     def __repr__(self):
         return f"ResearcherRequest(id={self.id}, email={self.user.email}, first_name={self.user.first_name}, last_name={self.user.last_name})"
+
+
+
+
+class PasswordResetOTP(Base):
+    __tablename__ = "password_reset_otps"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    otp_code: Mapped[str] = mapped_column(String(255))
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    user: Mapped["User"] = relationship("User")
+
+    def __repr__(self):
+        return f"PasswordResetOTP(id={self.id}, user_id={self.user_id}, expires_at={self.expires_at})"

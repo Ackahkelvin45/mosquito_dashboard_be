@@ -9,6 +9,7 @@ from app.device.schema import (
 )
 from app.device.chart_schema import DeviceChartsResponse
 from app.core.database import get_db
+from app.core.pagination import Page
 from sqlalchemy.orm import Session
 from utils.protected_route import get_current_user
 from app.service.device_service import DeviceService
@@ -35,9 +36,11 @@ def create_device(device_data: DeviceCreate, session: Session = Depends(get_db))
         raise e
 
 
-@router.get("", status_code=status.HTTP_200_OK, response_model=List[DeviceResponse], dependencies=[Depends(security)])
+@router.get("", status_code=status.HTTP_200_OK, response_model=Page[DeviceResponse], dependencies=[Depends(security)])
 def get_devices(
     session: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     name: Optional[str] = Query(default=None),
     region: Optional[str] = Query(default=None),
     device_uuid: Optional[str] = Query(default=None),
@@ -47,14 +50,17 @@ def get_devices(
     longitude: Optional[float] = Query(default=None),
     latitude: Optional[float] = Query(default=None),
     cluster_id: Optional[int] = Query(default=None),
+    trap_status: Optional[bool] = Query(default=None, description="Filter by device on/off status (latest reading's trap_status)"),
 ):
     try:
         return DeviceService(session).get_devices(
+            page=page, page_size=page_size,
             name=name, region=region,
             device_uuid=device_uuid,
             max_mosquito_count=max_mosquito_count, min_mosquito_count=min_mosquito_count,
             created_after=created_after, longitude=longitude,
             latitude=latitude, cluster_id=cluster_id,
+            trap_status=trap_status,
         )
     except Exception as e:
         raise e
@@ -76,10 +82,14 @@ def delete_device(device_id: int, session: Session = Depends(get_db)):
         raise e
 
 
-@router.get("/clusters", status_code=status.HTTP_200_OK, response_model=List[DeviceClusterResponse], dependencies=[Depends(security)])
-def get_clusters(session: Session = Depends(get_db)):
+@router.get("/clusters", status_code=status.HTTP_200_OK, response_model=Page[DeviceClusterResponse], dependencies=[Depends(security)])
+def get_clusters(
+    session: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
     try:
-        return DeviceClusterService(session).get_clusters()
+        return DeviceClusterService(session).get_clusters(page=page, page_size=page_size)
     except Exception as e:
         raise e
 
@@ -133,10 +143,15 @@ def ingest_sensor_reading(device_uuid: str, payload: SensorDataPayload, session:
         raise e
 
 
-@router.get("/uuid/{device_uuid}/sensor-readings", status_code=status.HTTP_200_OK, response_model=List[SensorDataResponse], dependencies=[Depends(security)])
-def get_sensor_readings(device_uuid: str, session: Session = Depends(get_db)):
+@router.get("/uuid/{device_uuid}/sensor-readings", status_code=status.HTTP_200_OK, response_model=Page[SensorDataResponse], dependencies=[Depends(security)])
+def get_sensor_readings(
+    device_uuid: str,
+    session: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
     try:
-        return DeviceService(session).get_sensor_readings(device_uuid)
+        return DeviceService(session).get_sensor_readings(device_uuid, page=page, page_size=page_size)
     except Exception as e:
         raise e
 
@@ -149,10 +164,12 @@ def ingest_mosquito_event(device_uuid: str, payload: MosquitoEventPayload, sessi
         raise e
 
 
-@router.get("/uuid/{device_uuid}/mosquito-events", status_code=status.HTTP_200_OK, response_model=List[MosquitoEventResponse], dependencies=[Depends(security)])
+@router.get("/uuid/{device_uuid}/mosquito-events", status_code=status.HTTP_200_OK, response_model=Page[MosquitoEventResponse], dependencies=[Depends(security)])
 def get_mosquito_events(
     device_uuid: str,
     session: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     start_date: Optional[datetime] = Query(default=None),
     end_date: Optional[datetime] = Query(default=None),
     search: Optional[str] = Query(default=None),
@@ -165,6 +182,8 @@ def get_mosquito_events(
             start_date, end_date = compute_datetime_range(range_, window_at)
         return DeviceService(session).get_mosquito_events(
             device_uuid,
+            page=page,
+            page_size=page_size,
             start_date=start_date,
             end_date=end_date,
             search=search,

@@ -194,6 +194,49 @@ def _researcher_declined_email_html(first_name: str) -> str:
 """
 
 
+def _password_reset_otp_email_html(first_name: str, otp: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Password Reset Code</title>
+</head>
+<body style="margin:0; padding:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; background-color: #E4E4E7;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #E4E4E7; padding: 40px 20px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 560px; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
+          <tr>
+            <td style="background: linear-gradient(135deg, #1565C0 0%, #2196F3 100%); padding: 32px 40px; text-align: center;">
+              <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">Mosquito Dashboard</h1>
+              <p style="margin: 8px 0 0; color: rgba(255,255,255,0.9); font-size: 14px;">Password Reset Request</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 40px;">
+              <p style="margin: 0 0 16px; color: #000000; font-size: 18px; font-weight: 600;">Hi {first_name},</p>
+              <p style="margin: 0 0 24px; color: #000000; font-size: 16px; line-height: 1.6;">We received a request to reset your password. Use the verification code below to continue. This code expires in 10 minutes.</p>
+              <div style="margin: 0 0 24px; padding: 20px; border: 1px solid #E4E4E7; border-radius: 10px; background-color: #F8FAFC; text-align: center;">
+                <span style="display: inline-block; font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #1565C0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">{otp}</span>
+              </div>
+              <p style="margin: 0; color: #000000; font-size: 14px; line-height: 1.6;">If you didn't request a password reset, you can safely ignore this email — your password will remain unchanged.</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 24px 40px; background-color: #E4E4E7; border-top: 1px solid #E4E4E7;">
+              <p style="margin: 0; color: #000000; font-size: 12px; opacity: 0.8;">© Mosquito Dashboard. All rights reserved.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+
 def send_email(to: str, subject: str, body: str) -> None:
     try:
         params: resend.Emails.SendParams = {
@@ -244,5 +287,15 @@ def send_researcher_declined_email(to: str, first_name: str) -> None:
     send_email(
         to=to,
         subject="Researcher Request Declined",
+        body=html,
+    )
+
+
+def send_password_reset_otp_email(to: str, first_name: str, otp: str) -> None:
+    """Send the one-time password used to reset a user's password."""
+    html = _password_reset_otp_email_html(first_name, otp)
+    send_email(
+        to=to,
+        subject="Your Password Reset Code",
         body=html,
     )

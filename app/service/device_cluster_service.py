@@ -4,6 +4,7 @@ from typing import List
 
 from app.device.repository.device_cluster_repository import DeviceClusterRepository
 from app.device.schema import DeviceClusterCreate, DeviceClusterResponse, DeviceClusterUpdate
+from app.core.pagination import Page, paginate
 
 
 class DeviceClusterService:
@@ -18,9 +19,13 @@ class DeviceClusterService:
         cluster = self.cluster_repository.update_cluster(cluster_id, cluster_data)
         return DeviceClusterResponse.model_validate(cluster)
 
-    def get_clusters(self) -> List[DeviceClusterResponse]:
+    def get_clusters(self, page: int = 1, page_size: int = 20) -> Page[DeviceClusterResponse]:
         clusters = self.cluster_repository.get_all()
-        return [DeviceClusterResponse.model_validate(cluster) for cluster in clusters]
+        sliced, total, total_pages = paginate(clusters, page, page_size)
+        return Page[DeviceClusterResponse](
+            items=[DeviceClusterResponse.model_validate(cluster) for cluster in sliced],
+            total=total, page=page, page_size=page_size, total_pages=total_pages,
+        )
 
     def get_cluster_by_id(self, cluster_id: int) -> DeviceClusterResponse:
         cluster = self.cluster_repository.get_by_id(cluster_id)

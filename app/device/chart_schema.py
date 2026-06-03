@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 
 
@@ -12,10 +12,9 @@ class MosquitoCountPoint(BaseModel):
 class MosquitoTrendPoint(BaseModel):
     label: str
     timestamp: datetime
-    young_male: int = 0
-    old_male: int = 0
-    young_female: int = 0
-    old_female: int = 0
+    # Dynamic counts keyed by "{age_group}_{sex}" (e.g. "adult_male", "old_female").
+    # Every point carries the same keys as the parent chart's `series_keys`.
+    series: Dict[str, int] = {}
 
 
 class MosquitoGenderPoint(BaseModel):
@@ -68,8 +67,13 @@ class MosquitoCountChart(BaseModel):
 
 
 class MosquitoTrendChart(BaseModel):
-    """LineChart — mosquito counts split by age × sex combination."""
+    """LineChart — mosquito counts split by age × sex combination.
+
+    `series_keys` lists every "{age_group}_{sex}" combination present in the
+    window, so the frontend knows which lines to render.
+    """
     data: List[MosquitoTrendPoint] = []
+    series_keys: List[str] = []
     group_by: str
     window_start: datetime
     window_end: datetime
