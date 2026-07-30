@@ -3,9 +3,11 @@ from datetime import datetime, timedelta
 
 from app.authentication.repository.userrepository import UserRepository
 from app.authentication.repository.password_reset_repository import PasswordResetRepository
+from app.device.models import DeviceCluster
 from app.authentication.schema import UserCreate, UserLogin, UserResponse, UserLoginResponse
 from app.core.security.authhandler import AuthHandler
 from app.core.security.hashHelper import HashHelper
+from app.notification.events import NotificationEvent, emit
 from app.service.email_service import send_welcome_email
 from app.core.pagination import Page, paginate
 from sqlalchemy.orm import Session
@@ -17,6 +19,7 @@ OTP_EXPIRY_MINUTES = 10
 
 class UserService:
     def __init__(self, session: Session):
+        self.session = session
         self.user_repository = UserRepository(session)
         self.password_reset_repository = PasswordResetRepository(session)
         self.auth_handler = AuthHandler()
@@ -25,15 +28,22 @@ class UserService:
     def create_user(self, user_data: UserCreate) -> UserResponse:
         if self.user_repository.user_exists_by_email(user_data.email):
             raise HTTPException(status_code=400, detail="User already exists,Please login")
+        if user_data.cluster_id is not None:
+            cluster = (
+                self.session.query(DeviceCluster)
+                .filter(DeviceCluster.id == user_data.cluster_id)
+                .first()
+            )
+            if not cluster:
+                raise HTTPException(status_code=404, detail=f"Cluster with id {user_data.cluster_id} not found")
         user_data.password = self.hash_helper.hash_password(user_data.password)
         user = self.user_repository.create_user(user_data)
+        emit(self.session, NotificationEvent.USER_REGISTERED, user=user)
         return UserResponse.model_validate(user)
 
     def login_user(self, login_data: UserLogin) -> UserLoginResponse:
         user = self.user_repository.get_user_by_email(login_data.email)
         if not user:
-            raise HTTPException(status_code=400, detail="Invalid credentials")
-        if not self.hash_helper.verify_password(password=login_data.password, hashed_password=user.hashed_password):
             raise HTTPException(status_code=400, detail="Invalid credentials")
         if not self.hash_helper.verify_password(password=login_data.password, hashed_password=user.hashed_password):
             raise HTTPException(status_code=400, detail="Invalid credentials")
@@ -71,6 +81,7 @@ class UserService:
         # Invalidate any previously issued, unused OTPs before creating a new one.
         self.password_reset_repository.invalidate_user_otps(user.id)
         self.password_reset_repository.create_otp(user.id, hashed_otp, expires_at)
+        emit(self.session, NotificationEvent.PASSWORD_RESET, user=user)
         return {"otp": otp_code, "first_name": user.first_name, "email": user.email}
 
     def verify_otp(self, email: str, otp: str) -> bool:
@@ -103,12 +114,17 @@ class UserService:
                   email: str = None,
                   name: str = None,
                   role: str = None,
-                  approval_status: str = None
+                  approval_status: str = None,
+                  restrict_cluster_id: int = None,
                   ) -> Page[UserResponse]:
         if any(v is not None for v in [email, name, role, approval_status]):
             users = self.user_repository.filter_users(email=email, name=name, role=role, approval_status=approval_status)
         else:
             users = self.user_repository.get_all_users()
+
+        # Cluster admins only see users within their own cluster.
+        if restrict_cluster_id is not None:
+            users = [u for u in users if u.cluster_id == restrict_cluster_id]
 
         sliced, total, total_pages = paginate(users, page, page_size)
         return Page[UserResponse](

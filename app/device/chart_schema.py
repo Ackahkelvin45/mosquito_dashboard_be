@@ -25,6 +25,11 @@ class MosquitoGenderPoint(BaseModel):
 
 
 class SensorStatusPoint(BaseModel):
+    """This device's trap state sampled at one instant.
+
+    Exactly one of on_count/off_count is 1 once the device has reported at
+    least once; both are 0 before its first-ever reading (state unknown).
+    """
     label: str
     timestamp: datetime
     on_count: int = 0
@@ -88,7 +93,13 @@ class MosquitoGenderChart(BaseModel):
 
 
 class SensorStatusTrendChart(BaseModel):
-    """LineChart — trap ON vs OFF readings per time bucket."""
+    """LineChart — this device's trap state sampled over time.
+
+    trap_status is a STATE, so it is sampled (latest reading at or before each
+    instant, carried forward) rather than counted per reading. The line steps
+    between 0 and 1; reporting frequency does not affect it. A device silent
+    longer than the staleness window reads as OFF.
+    """
     data: List[SensorStatusPoint] = []
     group_by: str
     window_start: datetime

@@ -96,15 +96,13 @@ def _researcher_request_email_html(first_name: str) -> str:
 """
 
 
-def _researcher_approved_email_html(first_name: str, cluster_uuid: str | None = None, cluster_password: str | None = None) -> str:
+def _researcher_approved_email_html(first_name: str, cluster_uuid: str | None = None) -> str:
     credentials_html = ""
-    if cluster_uuid and cluster_password:
+    if cluster_uuid:
         credentials_html = f"""
               <div style="margin: 28px 0 0; padding: 18px; border: 1px solid #E4E4E7; border-radius: 10px; background-color: #F8FAFC;">
                 <p style="margin: 0 0 10px; color: #000000; font-size: 14px; font-weight: 700;">Your cluster details</p>
-                <p style="margin: 0 0 8px; color: #000000; font-size: 14px; line-height: 1.6;"><strong>Cluster UUID:</strong> <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">{cluster_uuid}</span></p>
-                <p style="margin: 0; color: #000000; font-size: 14px; line-height: 1.6;"><strong>Cluster password:</strong> <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">{cluster_password}</span></p>
-                <p style="margin: 12px 0 0; color: #000000; font-size: 12px; line-height: 1.6; opacity: 0.8;">Keep this password secure. If you think it was exposed, contact support.</p>
+                <p style="margin: 0; color: #000000; font-size: 14px; line-height: 1.6;"><strong>Cluster UUID:</strong> <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">{cluster_uuid}</span></p>
               </div>
 """
     return f"""<!DOCTYPE html>
@@ -271,9 +269,9 @@ def send_researcher_request_email(to: str, first_name: str) -> None:
     )
 
 
-def send_researcher_approved_email(to: str, first_name: str, cluster_uuid: str | None = None, cluster_password: str | None = None) -> None:
+def send_researcher_approved_email(to: str, first_name: str, cluster_uuid: str | None = None) -> None:
     """Send a notification email when a researcher request is approved."""
-    html = _researcher_approved_email_html(first_name, cluster_uuid=cluster_uuid, cluster_password=cluster_password)
+    html = _researcher_approved_email_html(first_name, cluster_uuid=cluster_uuid)
     send_email(
         to=to,
         subject="Researcher Request Approved",

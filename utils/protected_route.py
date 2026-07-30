@@ -16,21 +16,36 @@ async def get_current_user(
     session: Session = Depends(get_db),
     authorization:Annotated[Union[str,None],Header(alias=AUTH_HEADER_NAME)] = None
 ) -> UserResponse:
+    """Resolve the authenticated user, or raise 401.
+
+    Use this as the dependency on protected routes — NOT bare `HTTPBearer`,
+    which only asserts that a header is present and never inspects it.
+    """
     if not authorization:
         raise UnauthorizedException()
-    if not authorization.startswith(AUTH_HEADER_TYPE):
-        raise UnauthorizedException()
-    
-    access_token=authorization.split(" ")[1]
 
-    payload=AuthHandler.decode_token(access_token)
-    if payload and payload.get("sub"):
-        user_id=payload.get("sub")
-        user=UserService(session).get_user_by_id(user_id)
-        if not user:
-            raise UnauthorizedException()
-        return UserResponse.model_validate(user)
-    else:
+    # Split on the first space: `startswith` alone would accept "Bearerxyz",
+    # and an index-based split blows up on a header with no space at all.
+    scheme, _, raw_token = authorization.partition(" ")
+    if scheme != AUTH_HEADER_TYPE:
         raise UnauthorizedException()
+
+    access_token = raw_token.strip()
+    if not access_token:
+        raise UnauthorizedException()
+
+    # verify_token enforces `type == "access"`. decode_token does not, which
+    # let a refresh token be replayed as an access token.
+    user_id = AuthHandler.verify_token(access_token, expected_type="access")
+
+    try:
+        user = UserService(session).get_user_by_id(user_id)
+    except HTTPException:
+        # Token was valid but the user is gone — that's an auth failure, not a 404.
+        raise UnauthorizedException()
+
+    if not user:
+        raise UnauthorizedException()
+    return user
     
 

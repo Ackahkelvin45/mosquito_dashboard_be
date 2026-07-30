@@ -19,4 +19,20 @@ dependencies = [
     "resend>=2.23.0",
     "paho-mqtt>=2.1.0",
     "fastapi-mqtt>=2.2.0",
+    "pywebpush>=2.3.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::sqlalchemy.exc.SAWarning",
 ]

@@ -12,6 +12,14 @@ class UserBase(BaseModel):
     is_active: bool = Field(default=True, description="Whether the user is active")
     role: UserRole = Field(default=UserRole.USER, description="Role of the user")
     approval_status: ApprovalStatus = Field(default=ApprovalStatus.PENDING, description="Approval status of the user")
+    cluster_id: Optional[int] = Field(None, description="ID of the cluster this user belongs to")
+
+
+class ClusterSummary(BaseModel):
+    """Minimal cluster reference embedded in a user response."""
+    id: int
+    name: str
+    model_config = ConfigDict(from_attributes=True)
 
 
 
@@ -38,10 +46,10 @@ class UserCreate(UserBase):
 
 
 class UserResponse(UserBase):
-    model_config = ConfigDict(from_attributes=True)
     id: int = Field(...,description="ID of the user")
     created_at: datetime = Field(...,description="Created at of the user")
     updated_at: datetime = Field(...,description="Updated at of the user")
+    cluster: Optional[ClusterSummary] = Field(None, description="The cluster this user belongs to")
 
     model_config = ConfigDict(from_attributes=True)
 

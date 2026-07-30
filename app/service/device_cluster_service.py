@@ -5,22 +5,31 @@ from typing import List
 from app.device.repository.device_cluster_repository import DeviceClusterRepository
 from app.device.schema import DeviceClusterCreate, DeviceClusterResponse, DeviceClusterUpdate
 from app.core.pagination import Page, paginate
+from app.notification.events import NotificationEvent, emit
 
 
 class DeviceClusterService:
     def __init__(self, session: Session):
+        self.session = session
         self.cluster_repository = DeviceClusterRepository(session)
 
     def create_cluster(self, cluster_data: DeviceClusterCreate) -> DeviceClusterResponse:
         cluster = self.cluster_repository.create_cluster(cluster_data)
-        return DeviceClusterResponse.model_validate(cluster)
+        response = DeviceClusterResponse.model_validate(cluster)
+        emit(self.session, NotificationEvent.CLUSTER_CREATED, cluster=cluster)
+        return response
 
     def update_cluster(self, cluster_id: int, cluster_data: DeviceClusterUpdate) -> DeviceClusterResponse:
         cluster = self.cluster_repository.update_cluster(cluster_id, cluster_data)
-        return DeviceClusterResponse.model_validate(cluster)
+        response = DeviceClusterResponse.model_validate(cluster)
+        emit(self.session, NotificationEvent.CLUSTER_UPDATED, cluster=cluster)
+        return response
 
-    def get_clusters(self, page: int = 1, page_size: int = 20) -> Page[DeviceClusterResponse]:
+    def get_clusters(self, page: int = 1, page_size: int = 20, allowed_cluster_ids=None) -> Page[DeviceClusterResponse]:
         clusters = self.cluster_repository.get_all()
+        # A scoped caller only sees their own cluster plus public ones.
+        if allowed_cluster_ids is not None:
+            clusters = [c for c in clusters if c.id in allowed_cluster_ids]
         sliced, total, total_pages = paginate(clusters, page, page_size)
         return Page[DeviceClusterResponse](
             items=[DeviceClusterResponse.model_validate(cluster) for cluster in sliced],

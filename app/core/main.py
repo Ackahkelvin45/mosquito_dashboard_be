@@ -10,10 +10,13 @@ from app.authentication.routes import router as authentication_router
 from app.mosquito.routes import router as mosquito_router
 from app.device.routes import router as device_router
 from app.dashboard.routes import router as dashboard_router
+from app.notification.routes import router as notification_router
+from app.notification.push_routes import router as push_router
 from utils.protected_route import get_current_user
 from app.authentication.schema import UserResponse
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.mqtt_client import mqtt  
+from app.core.mqtt_client import mqtt
+from app.jobs.scheduler import register_all_jobs, scheduler
 
 
 
@@ -34,10 +37,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Failed to start MQTT client: {e}")
         raise e
-      
+    try:
+        register_all_jobs()
+        await scheduler.start()  # <-- start background jobs
+        print("Background jobs scheduler started")
+    except Exception as e:
+        # Jobs are not critical path — log and keep the app up (unlike DB/MQTT).
+        print(f"Failed to start background jobs scheduler: {e}")
+
     yield  # app runs here
 
     # Shutdown
+    try:
+        await scheduler.stop()  # <-- stop background jobs
+        print("Background jobs scheduler stopped")
+    except Exception as e:
+        print(f"Failed to stop background jobs scheduler: {e}")
     await mqtt.mqtt_shutdown()  # <-- stop MQTT client
     print("MQTT client stopped")
     print("Shutting down application...")
@@ -93,6 +108,8 @@ app.include_router(authentication_router, tags=["authentication"], prefix="/auth
 app.include_router(device_router, tags=["devices"], prefix="/devices")
 app.include_router(mosquito_router, tags=["mosquito"], prefix="/mosquito")
 app.include_router(dashboard_router, tags=["dashboard"], prefix="/dashboard")
+app.include_router(notification_router, tags=["notifications"], prefix="/notifications")
+app.include_router(push_router, tags=["push"], prefix="/push")
 
 
 # ---------------------------

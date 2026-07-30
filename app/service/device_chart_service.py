@@ -1,8 +1,10 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 from app.device.models import MosquitoEvent, MosquitoIndividualReading, SensorDeviceReading
+from app.device.schema import ACTIVE_WINDOW_HOURS
 from app.device.chart_schema import (
     MosquitoCountPoint, MosquitoTrendPoint, MosquitoGenderPoint,
     SensorStatusPoint, TemperaturePoint, HumidityPoint, PressurePoint, BatteryPoint,
@@ -75,7 +77,7 @@ class DeviceChartService:
             mosquito_count=self._mosquito_count(mosquito_events, window_start, window_end, group_by),
             mosquito_trend=self._mosquito_trend(events_with_readings, window_start, window_end, group_by),
             mosquito_gender=self._mosquito_gender(events_with_readings, window_start, window_end, group_by),
-            sensor_status=self._sensor_status(sensor_readings, window_start, window_end, group_by),
+            sensor_status=self._sensor_status(device_id, window_start, window_end, group_by),
             temperature=self._temperature(sensor_readings, window_start, window_end, group_by),
             humidity=self._humidity(sensor_readings, window_start, window_end, group_by),
             pressure=self._pressure(sensor_readings, window_start, window_end, group_by),
@@ -90,7 +92,9 @@ class DeviceChartService:
         bucket_delta, _ = _BUCKET[group_by]
         buckets = []
         cursor = window_start
-        while cursor <= window_end:
+        # `<` — a bucket starting AT window_end could never collect data and
+        # would render as a false drop to zero at the chart's right edge.
+        while cursor < window_end:
             buckets.append(cursor)
             cursor += bucket_delta
         return buckets
@@ -193,29 +197,79 @@ class DeviceChartService:
 
     # ── Chart 4: ActiveStatusTrendChart ──────────────────────────────────────
 
-    def _sensor_status(self, readings, window_start, window_end, group_by) -> SensorStatusTrendChart:
+    def _sensor_status(self, device_id, window_start, window_end, group_by) -> SensorStatusTrendChart:
+        """Sample this device's trap state at each instant.
+
+        trap_status is a STATE, not an event, so it is sampled — never counted.
+        Counting rows made this a chart of how often the device reported (a
+        30s-interval device produced ~120 per hourly bucket, and any bucket it
+        skipped read as 0 even though the trap never changed). Now each point
+        takes the latest reading at or before that instant, carried forward, so
+        the line steps between 0 and 1. A reading older than
+        ACTIVE_WINDOW_HOURS reads as OFF — a dark trap is not operating.
+        """
         bucket_delta, label_fmt = _BUCKET[group_by]
-        buckets: dict[datetime, dict] = {
-            ts: {"on": 0, "off": 0} for ts in self._make_buckets(window_start, window_end, group_by)
-        }
+        stale = timedelta(hours=ACTIVE_WINDOW_HOURS)
 
-        for r in readings:
-            key = self._bucket_key(r.timestamp, window_start, bucket_delta)
-            if key in buckets:
-                if r.trap_status:
-                    buckets[key]["on"] += 1
-                else:
-                    buckets[key]["off"] += 1
+        # Sample instants span the window inclusively so the final point is the
+        # state as of `window_end` (i.e. right now).
+        samples: list[datetime] = []
+        cursor = window_start
+        while cursor <= window_end:
+            samples.append(cursor)
+            cursor += bucket_delta
 
-        data = [
-            SensorStatusPoint(
-                label=ts.strftime(label_fmt),
-                timestamp=ts,
-                on_count=counts["on"],
-                off_count=counts["off"],
+        first_seen = (
+            self.session.query(func.min(SensorDeviceReading.timestamp))
+            .filter(SensorDeviceReading.device_id == device_id)
+            .scalar()
+        )
+        if first_seen is not None and first_seen.tzinfo:
+            first_seen = first_seen.replace(tzinfo=None)
+
+        # Readings that can influence any sample. Anything older than `stale`
+        # before the first instant reads as OFF regardless, so the lookback is
+        # bounded rather than scanning full history.
+        rows = (
+            self.session.query(SensorDeviceReading.timestamp, SensorDeviceReading.trap_status)
+            .filter(
+                SensorDeviceReading.device_id == device_id,
+                SensorDeviceReading.timestamp >= window_start - stale,
+                SensorDeviceReading.timestamp <= window_end,
             )
-            for ts, counts in sorted(buckets.items())
+            .order_by(SensorDeviceReading.timestamp, SensorDeviceReading.id)
+            .all()
+        )
+        readings = [
+            ((ts.replace(tzinfo=None) if ts.tzinfo else ts), bool(status))
+            for ts, status in rows
         ]
+
+        data: list[SensorStatusPoint] = []
+        i = 0
+        last: tuple[datetime, bool] | None = None
+        for t in samples:
+            while i < len(readings) and readings[i][0] <= t:
+                last = readings[i]
+                i += 1
+
+            if first_seen is None or first_seen > t:
+                # Device had not reported yet — state unknown, not "off".
+                on = off = 0
+            elif last is not None and (t - last[0]) <= stale and last[1]:
+                on, off = 1, 0
+            else:
+                on, off = 0, 1
+
+            data.append(
+                SensorStatusPoint(
+                    label=t.strftime(label_fmt),
+                    timestamp=t,
+                    on_count=on,
+                    off_count=off,
+                )
+            )
+
         return SensorStatusTrendChart(data=data, group_by=group_by, window_start=window_start, window_end=window_end)
 
     # ── Chart 5: TemperatureTrendChart ───────────────────────────────────────

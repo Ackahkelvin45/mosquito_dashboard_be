@@ -11,15 +11,19 @@ from app.authentication.models import User
 class DeviceClusterRepository(BaseRepository[DeviceCluster]):
     model = DeviceCluster
 
+    def _resolve_users(self, user_ids: list[int], what: str) -> list[User]:
+        users = self.session.query(User).filter(User.id.in_(user_ids)).all()
+        if len(users) != len(set(user_ids)):
+            raise HTTPException(status_code=404, detail=f"One or more {what} not found")
+        return users
+
     def create_cluster(self, cluster_data: DeviceClusterCreate) -> DeviceCluster:
         data = cluster_data.model_dump(exclude_none=True)
 
         if "cluster_admins" in data:
-            admin_ids = data.pop("cluster_admins")
-            admins = self.session.query(User).filter(User.id.in_(admin_ids)).all()
-            if len(admins) != len(admin_ids):
-                raise HTTPException(status_code=404, detail="One or more cluster admins not found")
-            data["cluster_admins"] = admins
+            data["cluster_admins"] = self._resolve_users(data.pop("cluster_admins"), "cluster admins")
+        if "users" in data:
+            data["users"] = self._resolve_users(data.pop("users"), "users")
 
         new_cluster = DeviceCluster(**data)
         self.session.add(new_cluster)
@@ -37,11 +41,10 @@ class DeviceClusterRepository(BaseRepository[DeviceCluster]):
         update_data = cluster_data.model_dump(exclude_none=True)
 
         if "cluster_admins" in update_data:
-            admin_ids = update_data.pop("cluster_admins")
-            admins = self.session.query(User).filter(User.id.in_(admin_ids)).all()
-            if len(admins) != len(admin_ids):
-                raise HTTPException(status_code=404, detail="One or more cluster admins not found")
-            update_data["cluster_admins"] = admins
+            update_data["cluster_admins"] = self._resolve_users(update_data.pop("cluster_admins"), "cluster admins")
+        if "users" in update_data:
+            # Replaces the member list: users dropped from it get cluster_id=NULL.
+            update_data["users"] = self._resolve_users(update_data.pop("users"), "users")
 
         for key, value in update_data.items():
             setattr(cluster, key, value)

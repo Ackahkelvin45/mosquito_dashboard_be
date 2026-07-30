@@ -7,6 +7,15 @@ from app.device.schema import DeviceCreate, DeviceUpdate,SensorDataPayload,Mosqu
 from datetime import datetime, timezone
 from fastapi import HTTPException
 from utils.time_range import to_utc_naive
+from app.service.device_location_service import apply_reported_position
+
+
+def _as_filter_list(value) -> List[str]:
+    """Normalize a filter that may be a single string or a list of strings."""
+    if value is None:
+        return []
+    values = [value] if isinstance(value, str) else list(value)
+    return [v.strip() for v in values if v and str(v).strip()]
 
 
 class DeviceRepository(BaseRepository[Device]):
@@ -105,16 +114,27 @@ class DeviceRepository(BaseRepository[Device]):
             region: Optional[str] = None,
             name: Optional[str] = None,
             device_uuid: Optional[str] = None,
+            search: Optional[str] = None,
             min_mosquito_count: Optional[int] = None,
             max_mosquito_count: Optional[int] = None,
             latitude: Optional[float] = None,
             longitude: Optional[float] = None,
-            cluster_id: Optional[int] = None,
+            cluster_id: "Optional[int | List[int]]" = None,
             created_after: Optional[datetime] = None,
             trap_status: Optional[bool] = None,
     ) -> List[Device]:
         query = self.session.query(Device)
 
+        if search:
+            like = f"%{search.strip()}%"
+            query = query.filter(
+                or_(
+                    Device.name.ilike(like),
+                    func.coalesce(Device.region, "").ilike(like),
+                    func.coalesce(Device.community, "").ilike(like),
+                    func.coalesce(Device.device_uuid, "").ilike(like),
+                )
+            )
         if region:
             query = query.filter(Device.region.ilike(f"%{region}%"))
         if name:
@@ -132,7 +152,10 @@ class DeviceRepository(BaseRepository[Device]):
         if created_after is not None:
             query = query.filter(Device.created_at >= created_after)
         if cluster_id is not None:
-            query = query.filter(Device.cluster_id == cluster_id)
+            # Accepts a single id or a multi-select list of ids.
+            cluster_ids = [cluster_id] if isinstance(cluster_id, int) else [int(c) for c in cluster_id]
+            if cluster_ids:
+                query = query.filter(Device.cluster_id.in_(cluster_ids))
         if trap_status is not None:
             # "On/off" reflects the trap_status of each device's most recent sensor reading.
             latest_reading = (
@@ -157,6 +180,37 @@ class DeviceRepository(BaseRepository[Device]):
 
         return query.all()
     
+    def get_mosquito_filter_options(self, allowed_cluster_ids: Optional[set] = None) -> dict:
+        """Distinct values that power the historical-data filter dropdowns."""
+        region_query = self.session.query(Device.region).filter(
+            Device.region.isnot(None), Device.region != ""
+        )
+        if allowed_cluster_ids is not None:
+            region_query = region_query.filter(Device.cluster_id.in_(allowed_cluster_ids))
+        regions = sorted({row[0] for row in region_query.distinct()})
+
+        reading_query = (
+            self.session.query(MosquitoIndividualReading.genus, MosquitoIndividualReading.species)
+            .join(MosquitoEvent, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
+            .join(Device, MosquitoEvent.device_id == Device.id)
+        )
+        if allowed_cluster_ids is not None:
+            reading_query = reading_query.filter(Device.cluster_id.in_(allowed_cluster_ids))
+
+        genus_values: set = set()
+        species_values: set = set()
+        for genus, species in reading_query.distinct():
+            if genus:
+                genus_values.add(genus)
+            if species:
+                species_values.add(species)
+
+        return {
+            "regions": regions,
+            "genus": sorted(genus_values),
+            "species": sorted(species_values),
+        }
+
     def refresh_last_activity(self, device_id: int) -> None:
         device = self.get_by_id(device_id)
         if not device:
@@ -167,6 +221,10 @@ class DeviceRepository(BaseRepository[Device]):
 
 
     def create_sensor_reading(self, device: Device, payload: SensorDataPayload) -> SensorDeviceReading:
+            # A GPS fix on the reading updates the device's position (and, via
+            # reverse geocoding, its region/community).
+            apply_reported_position(self.session, device, payload.latitude, payload.longitude)
+
             reading = SensorDeviceReading(
                 device_id=device.id,
                 timestamp=payload.timestamp,
@@ -197,6 +255,8 @@ class DeviceRepository(BaseRepository[Device]):
         )
 
     def create_mosquito_event(self, device: Device, payload: MosquitoEventPayload) -> MosquitoEvent:
+        apply_reported_position(self.session, device, payload.latitude, payload.longitude)
+
         reading_payload = payload.mosquito_reading
         mosquito_reading = MosquitoIndividualReading(
             detection_timestamp=reading_payload.detection_timestamp,
@@ -226,10 +286,11 @@ class DeviceRepository(BaseRepository[Device]):
         start_date: datetime | None = None,
         end_date: datetime | None = None,
         search: str | None = None,
-        region: str | None = None,
+        region: str | List[str] | None = None,
         device_uuids: List[str] | None = None,
-        genus: str | None = None,
-        species: str | None = None,
+        genus: str | List[str] | None = None,
+        species: str | List[str] | None = None,
+        allowed_cluster_ids: Optional[set] = None,
     ):
         if start_date is not None:
             start_date = to_utc_naive(start_date)
@@ -240,14 +301,24 @@ class DeviceRepository(BaseRepository[Device]):
         if end_date is not None:
             query = query.filter(MosquitoEvent.timestamp <= end_date)
 
-        if region:
-            query = query.filter(Device.region.ilike(f"%{region}%"))
+        # Cluster scope (requires Device to be joined — callers force the join
+        # when allowed_cluster_ids is set).
+        if allowed_cluster_ids is not None:
+            query = query.filter(Device.cluster_id.in_(allowed_cluster_ids))
+
+        # Multi-select filters: an event matches when it matches ANY of the
+        # selected values (OR within a filter, AND across filters).
+        regions = _as_filter_list(region)
+        if regions:
+            query = query.filter(or_(*[Device.region.ilike(f"%{r}%") for r in regions]))
         if device_uuids:
             query = query.filter(Device.device_uuid.in_(device_uuids))
-        if genus:
-            query = query.filter(MosquitoIndividualReading.genus.ilike(f"%{genus}%"))
-        if species:
-            query = query.filter(MosquitoIndividualReading.species.ilike(f"%{species}%"))
+        genus_values = _as_filter_list(genus)
+        if genus_values:
+            query = query.filter(or_(*[MosquitoIndividualReading.genus.ilike(f"%{g}%") for g in genus_values]))
+        species_values = _as_filter_list(species)
+        if species_values:
+            query = query.filter(or_(*[MosquitoIndividualReading.species.ilike(f"%{s}%") for s in species_values]))
 
         if search:
             tokens = [t for t in search.strip().split() if t]
@@ -326,12 +397,14 @@ class DeviceRepository(BaseRepository[Device]):
         start_date: datetime | None = None,
         end_date: datetime | None = None,
         search: str | None = None,
-        region: str | None = None,
+        region: str | List[str] | None = None,
         device_uuids: List[str] | None = None,
-        genus: str | None = None,
-        species: str | None = None,
+        genus: str | List[str] | None = None,
+        species: str | List[str] | None = None,
+        allowed_cluster_ids: Optional[set] = None,
     ) -> List[MosquitoEvent]:
-        needs_join = bool(search or region or device_uuids or genus or species)
+        # Cluster scope needs the Device join, so force the join path when set.
+        needs_join = bool(search or region or device_uuids or genus or species) or allowed_cluster_ids is not None
 
         if not needs_join:
             base_query = self.session.query(MosquitoEvent)
@@ -365,6 +438,7 @@ class DeviceRepository(BaseRepository[Device]):
             device_uuids=device_uuids,
             genus=genus,
             species=species,
+            allowed_cluster_ids=allowed_cluster_ids,
         )
         ids_subq = (
             search_query

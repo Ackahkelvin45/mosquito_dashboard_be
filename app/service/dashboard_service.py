@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.device.models import Device, MosquitoEvent, SensorDeviceReading, MosquitoIndividualReading
+from app.device.schema import ACTIVE_WINDOW_HOURS
 from app.dashboard.schema import (
     DashboardTotals,
     DashboardChart,
@@ -13,6 +14,7 @@ from app.dashboard.schema import (
     GenderDistribution,
     DashboardRegionChart,
     RegionMosquitoCountDataPoint,
+    CommunityMosquitoCountDataPoint,
     SensorStatusDataPoint,
     DashboardSensorStatusChart,
     BreakdownItem,
@@ -25,21 +27,46 @@ from app.dashboard.schema import (
 
 # Rolling window for each group_by value
 _WINDOW = {
-    "hour":  timedelta(hours=1),
     "day":   timedelta(hours=24),
-    "week":  timedelta(days=7),
     "month": timedelta(days=30),
+    # 360, not 365: the year then splits into 12 equal 30-day buckets — a
+    # 365-day window would end on a misleading 5-day final bucket.
+    "year":  timedelta(days=360),
 }
 
 # Chart (bucket timedelta, x-axis label format) for each group_by value
 _BUCKET = {
-    "hour":  (timedelta(minutes=1), "%H:%M"),
-    "day":   (timedelta(hours=1),   "%H:00"),
-    "week":  (timedelta(days=1),    "%Y-%m-%d"),
-    "month": (timedelta(days=1),    "%Y-%m-%d"),
+    "day":   (timedelta(hours=1),  "%H:00"),
+    "month": (timedelta(days=1),   "%Y-%m-%d"),
+    # Day kept in the label: 30-day buckets drift across calendar months, so
+    # "%b %Y" alone can repeat and the heatmap keys its columns by label.
+    "year":  (timedelta(days=30),  "%d %b %y"),
 }
 
 VALID_GROUP_BY = set(_WINDOW.keys())
+
+
+def _resolve_bucket(group_by: str, window_start: datetime, window_end: datetime):
+    """Bucket size + label format for a window. Known group_by values use the
+    fixed table; a custom date range scales its buckets to the window span so
+    charts always land on a readable number of points. Labels always include
+    enough of the date to stay unique — the heatmap keys its columns by label.
+    """
+    if group_by in _BUCKET:
+        return _BUCKET[group_by]
+    span = window_end - window_start
+    if span <= timedelta(days=2):
+        return (timedelta(hours=1), "%d %b %H:%M")
+    if span <= timedelta(days=90):
+        return (timedelta(days=1), "%d %b %y")
+    if span <= timedelta(days=400):
+        return (timedelta(days=7), "%d %b %y")
+    return (timedelta(days=30), "%d %b %y")
+
+
+def _to_naive_utc(dt: datetime) -> datetime:
+    """DB timestamps are naive UTC; normalise tz-aware inputs to match."""
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
 
 
 class DashboardService:
@@ -48,17 +75,20 @@ class DashboardService:
 
     def get_dashboard(
         self,
-        totals_group_by: str = "week",
-        chart_group_by: str = "week",
-        gender_group_by: str = "week",
-        region_group_by: str = "week",
-        sensor_status_group_by: str = "week",
-        breakdown_group_by: str = "week",
-        correlation_group_by: str = "week",
-        genus_heatmap_group_by: str = "week",
+        totals_group_by: str = "month",
+        chart_group_by: str = "month",
+        gender_group_by: str = "month",
+        region_group_by: str = "month",
+        sensor_status_group_by: str = "month",
+        breakdown_group_by: str = "month",
+        correlation_group_by: str = "month",
+        genus_heatmap_group_by: str = "month",
         region: Optional[str] = None,
         cluster_id: Optional[int] = None,
         device_id: Optional[int] = None,
+        allowed_cluster_ids: Optional[set[int]] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
     ) -> DashboardResponse:
         """
         Single entry point for all dashboard data.
@@ -67,15 +97,19 @@ class DashboardService:
         - `chart_group_by`  → controls the rolling window + bucket size for the bar chart
 
         Both can be set independently.
+
+        When `start_date` AND `end_date` are given, that fixed window overrides
+        every group_by: all sections cover the same custom range and echo
+        `group_by="custom"`.
         """
-        totals_group_by = totals_group_by.lower() if totals_group_by in VALID_GROUP_BY else "week"
-        chart_group_by  = chart_group_by.lower()  if chart_group_by  in VALID_GROUP_BY else "week"
-        gender_group_by = gender_group_by.lower() if gender_group_by in VALID_GROUP_BY else "week"
-        region_group_by = region_group_by.lower() if region_group_by in VALID_GROUP_BY else "week"
-        sensor_status_group_by = sensor_status_group_by.lower() if sensor_status_group_by in VALID_GROUP_BY else "week"
-        breakdown_group_by = breakdown_group_by.lower() if breakdown_group_by in VALID_GROUP_BY else "week"
-        correlation_group_by = correlation_group_by.lower() if correlation_group_by in VALID_GROUP_BY else "week"
-        genus_heatmap_group_by = genus_heatmap_group_by.lower() if genus_heatmap_group_by in VALID_GROUP_BY else "week"
+        totals_group_by = totals_group_by.lower() if totals_group_by in VALID_GROUP_BY else "month"
+        chart_group_by  = chart_group_by.lower()  if chart_group_by  in VALID_GROUP_BY else "month"
+        gender_group_by = gender_group_by.lower() if gender_group_by in VALID_GROUP_BY else "month"
+        region_group_by = region_group_by.lower() if region_group_by in VALID_GROUP_BY else "month"
+        sensor_status_group_by = sensor_status_group_by.lower() if sensor_status_group_by in VALID_GROUP_BY else "month"
+        breakdown_group_by = breakdown_group_by.lower() if breakdown_group_by in VALID_GROUP_BY else "month"
+        correlation_group_by = correlation_group_by.lower() if correlation_group_by in VALID_GROUP_BY else "month"
+        genus_heatmap_group_by = genus_heatmap_group_by.lower() if genus_heatmap_group_by in VALID_GROUP_BY else "month"
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -86,49 +120,67 @@ class DashboardService:
             device_q = device_q.filter(Device.cluster_id == cluster_id)
         if device_id is not None:
             device_q = device_q.filter(Device.id == device_id)
+        # Cluster scope from the caller's role. None => unrestricted (super admin).
+        # A restricted caller only ever sees devices in their allowed clusters,
+        # no matter what region/cluster_id/device_id they asked for.
+        if allowed_cluster_ids is not None:
+            device_q = device_q.filter(Device.cluster_id.in_(allowed_cluster_ids))
 
         all_devices = device_q.all()
         device_ids = [d.id for d in all_devices]
 
+        # A device-scoping filter was requested → charts must honour the matched
+        # set even when it is EMPTY (an empty match means empty charts, never a
+        # silent fallback to the whole fleet). A cluster-restricted caller is
+        # ALWAYS scoped, so their device_ids drive the charts too. Only an
+        # unrestricted caller with no explicit filter gets None (query all).
+        has_device_filter = bool(region) or cluster_id is not None or device_id is not None
+        is_restricted = allowed_cluster_ids is not None
+        scoped_ids: Optional[list[int]] = (
+            device_ids if (has_device_filter or is_restricted) else None
+        )
+
+        # A complete custom range overrides every per-section rolling window.
+        custom = start_date is not None and end_date is not None
+        custom_start = _to_naive_utc(start_date) if custom else None
+        custom_end = _to_naive_utc(end_date) if custom else None
+
+        def section_window(group_by: str) -> tuple[datetime, datetime, str]:
+            if custom:
+                return custom_start, custom_end, "custom"
+            return now - _WINDOW[group_by], now, group_by
+
         # ── Totals (own window) ──────────────────────────────────────────────
-        t_end   = now
-        t_start = now - _WINDOW[totals_group_by]
-        totals  = self._compute_totals(all_devices, device_ids, t_start, t_end, totals_group_by)
+        t_start, t_end, t_gb = section_window(totals_group_by)
+        totals  = self._compute_totals(all_devices, device_ids, t_start, t_end, t_gb)
 
         # ── Chart (own window) ───────────────────────────────────────────────
-        c_end   = now
-        c_start = now - _WINDOW[chart_group_by]
-        chart   = self._compute_chart(device_ids, c_start, c_end, chart_group_by)
+        c_start, c_end, c_gb = section_window(chart_group_by)
+        chart   = self._compute_chart(scoped_ids, c_start, c_end, c_gb)
 
         # ── Gender Distribution (own window) ──
-        g_end   = now
-        g_start = now - _WINDOW[gender_group_by]
-        gender_distribution = self._compute_gender_distribution(device_ids, g_start, g_end, gender_group_by)
+        g_start, g_end, g_gb = section_window(gender_group_by)
+        gender_distribution = self._compute_gender_distribution(scoped_ids, g_start, g_end, g_gb)
 
         # ── Region Chart (own window) ───────────────────────────────
-        r_end   = now
-        r_start = now - _WINDOW[region_group_by]
-        region_chart = self._compute_region_chart(device_ids, r_start, r_end, region_group_by)
+        r_start, r_end, r_gb = section_window(region_group_by)
+        region_chart = self._compute_region_chart(scoped_ids, r_start, r_end, r_gb)
 
         # ── Sensor Status Chart (own window) ───────────────────────────
-        ss_end   = now
-        ss_start = now - _WINDOW[sensor_status_group_by]
-        sensor_status_chart = self._compute_sensor_status_chart(device_ids, ss_start, ss_end, sensor_status_group_by)
+        ss_start, ss_end, ss_gb = section_window(sensor_status_group_by)
+        sensor_status_chart = self._compute_sensor_status_chart(scoped_ids, ss_start, ss_end, ss_gb)
 
         # ── Breakdown (own window) ──────────────────────────────────────
-        b_end   = now
-        b_start = now - _WINDOW[breakdown_group_by]
-        breakdown = self._compute_breakdown(device_ids, b_start, b_end, breakdown_group_by)
+        b_start, b_end, b_gb = section_window(breakdown_group_by)
+        breakdown = self._compute_breakdown(scoped_ids, b_start, b_end, b_gb)
 
         # ── Correlation Chart (own window) ──────────────────────────────
-        cor_end   = now
-        cor_start = now - _WINDOW[correlation_group_by]
-        correlation_chart = self._compute_correlation_chart(device_ids, cor_start, cor_end, correlation_group_by)
+        cor_start, cor_end, cor_gb = section_window(correlation_group_by)
+        correlation_chart = self._compute_correlation_chart(scoped_ids, cor_start, cor_end, cor_gb)
 
         # ── Genus Heatmap (own window) ──────────────────────────────────
-        gh_end   = now
-        gh_start = now - _WINDOW[genus_heatmap_group_by]
-        genus_heatmap = self._compute_genus_heatmap(device_ids, gh_start, gh_end, genus_heatmap_group_by)
+        gh_start, gh_end, gh_gb = section_window(genus_heatmap_group_by)
+        genus_heatmap = self._compute_genus_heatmap(scoped_ids, gh_start, gh_end, gh_gb)
 
         return DashboardResponse(
             totals=totals,
@@ -243,7 +295,7 @@ class DashboardService:
 
     def _compute_gender_distribution(
         self,
-        device_ids: list[int],
+        device_ids: Optional[list[int]],
         window_start: datetime,
         window_end: datetime,
         group_by: str,
@@ -259,8 +311,8 @@ class DashboardService:
                 MosquitoEvent.timestamp <= window_end,
             )
         )
-        
-        if device_ids:
+
+        if device_ids is not None:
             result = result.filter(MosquitoEvent.device_id.in_(device_ids))
             
         rows = result.group_by(func.lower(MosquitoIndividualReading.sex)).all()
@@ -286,14 +338,18 @@ class DashboardService:
 
     def _compute_region_chart(
         self,
-        device_ids: list[int],
+        device_ids: Optional[list[int]],
         window_start: datetime,
         window_end: datetime,
         group_by: str,
     ) -> DashboardRegionChart:
+        # Grouped by region AND community so each region bar can be drawn as a
+        # stack of the communities monitored inside it. The region total is the
+        # sum of its communities, so the bar height is unchanged.
         result = (
             self.session.query(
                 Device.region,
+                Device.community,
                 func.sum(MosquitoEvent.count)
             )
             .join(Device, MosquitoEvent.device_id == Device.id)
@@ -302,24 +358,50 @@ class DashboardService:
                 MosquitoEvent.timestamp <= window_end,
             )
         )
-        
-        if device_ids:
+
+        if device_ids is not None:
             result = result.filter(MosquitoEvent.device_id.in_(device_ids))
-            
-        rows = result.group_by(Device.region).all()
-        
+
+        rows = result.group_by(Device.region, Device.community).all()
+
+        # region -> community -> count. Several devices can sit in the same
+        # community, so their counts accumulate rather than overwrite.
+        by_region: dict[str, dict[str, int]] = {}
+        for region, community, count in rows:
+            if count is None:
+                continue
+            region_name = region if region else "Unknown"
+            community_name = community if community else "Unknown"
+            bucket = by_region.setdefault(region_name, {})
+            bucket[community_name] = bucket.get(community_name, 0) + (count or 0)
+
         data = [
             RegionMosquitoCountDataPoint(
-                region=region if region else "Unknown",
-                count=count or 0
+                region=region_name,
+                count=sum(communities.values()),
+                communities=[
+                    CommunityMosquitoCountDataPoint(community=name, count=value)
+                    # Largest first, name as tiebreak so equal counts stay stable.
+                    for name, value in sorted(
+                        communities.items(), key=lambda kv: (-kv[1], kv[0])
+                    )
+                ],
             )
-            for region, count in rows if count is not None
+            for region_name, communities in by_region.items()
         ]
-        
+
         data.sort(key=lambda x: x.count, reverse=True)
+
+        # Alphabetical, not by count: the client binds colours to this order, and
+        # a rank-based order would repaint every community whenever a filter
+        # changed the counts.
+        all_communities = sorted(
+            {c.community for point in data for c in point.communities}
+        )
 
         return DashboardRegionChart(
             data=data,
+            communities=all_communities,
             group_by=group_by,
             window_start=window_start,
             window_end=window_end,
@@ -329,46 +411,97 @@ class DashboardService:
 
     def _compute_sensor_status_chart(
         self,
-        device_ids: list[int],
+        device_ids: Optional[list[int]],
         window_start: datetime,
         window_end: datetime,
         group_by: str,
     ) -> DashboardSensorStatusChart:
-        bucket_delta, label_fmt = _BUCKET[group_by]
+        """Sample every device's trap state at each chart instant.
 
-        q = self.session.query(SensorDeviceReading).filter(
-            SensorDeviceReading.timestamp >= window_start,
-            SensorDeviceReading.timestamp <= window_end,
-        )
-        if device_ids:
-            q = q.filter(SensorDeviceReading.device_id.in_(device_ids))
-        readings = q.all()
+        trap_status is a STATE, not an event, so it must be sampled — never
+        summed. Each device counts exactly once per point: on/off from its
+        latest reading at or before that instant (carried forward between
+        reports). A device whose last report is older than ACTIVE_WINDOW_HOURS
+        counts as OFF — a trap that has gone dark is not operating, and without
+        this a device that died while ON would stay "on" forever. This keeps
+        chatty devices from outweighing quiet ones and makes
+        on + off == devices that have reported at least once by then.
+        """
+        bucket_delta, label_fmt = _resolve_bucket(group_by, window_start, window_end)
+        stale = timedelta(hours=ACTIVE_WINDOW_HOURS)
 
-        # Build ordered empty buckets
-        buckets: dict[datetime, dict[str, int]] = {}
+        # Sample instants span the window inclusively; the last point is the
+        # state as of `window_end` (i.e. right now).
+        samples: list[datetime] = []
         cursor = window_start
         while cursor <= window_end:
-            buckets[cursor] = {"on": 0, "off": 0}
+            samples.append(cursor)
             cursor += bucket_delta
 
-        for r in readings:
-            ts = r.timestamp.replace(tzinfo=None) if r.timestamp.tzinfo else r.timestamp
-            n = int((ts - window_start).total_seconds() // bucket_delta.total_seconds())
-            key = window_start + n * bucket_delta
-            if key in buckets:
-                if r.trap_status:
-                    buckets[key]["on"] += 1
+        # When each device FIRST reported ever — a device only joins the chart
+        # from that moment on (before it, it is absent, not "offline").
+        first_q = self.session.query(
+            SensorDeviceReading.device_id,
+            func.min(SensorDeviceReading.timestamp),
+        )
+        if device_ids is not None:
+            first_q = first_q.filter(SensorDeviceReading.device_id.in_(device_ids))
+        first_seen = dict(first_q.group_by(SensorDeviceReading.device_id).all())
+
+        # Readings that can influence any sample. Anything older than `stale`
+        # before the earliest sample is offline regardless, so the horizon is
+        # bounded — no need to scan the full history.
+        readings_q = (
+            self.session.query(
+                SensorDeviceReading.device_id,
+                SensorDeviceReading.timestamp,
+                SensorDeviceReading.trap_status,
+            )
+            .filter(
+                SensorDeviceReading.timestamp >= window_start - stale,
+                SensorDeviceReading.timestamp <= window_end,
+            )
+            .order_by(
+                SensorDeviceReading.device_id,
+                SensorDeviceReading.timestamp,
+                SensorDeviceReading.id,
+            )
+        )
+        if device_ids is not None:
+            readings_q = readings_q.filter(SensorDeviceReading.device_id.in_(device_ids))
+
+        per_device: dict[int, list[tuple[datetime, bool]]] = {}
+        for dev_id, ts, status in readings_q.all():
+            ts = ts.replace(tzinfo=None) if ts.tzinfo else ts
+            per_device.setdefault(dev_id, []).append((ts, bool(status)))
+
+        counts = {t: {"on": 0, "off": 0} for t in samples}
+        for dev_id, first_ts in first_seen.items():
+            first_ts = first_ts.replace(tzinfo=None) if first_ts.tzinfo else first_ts
+            rs = per_device.get(dev_id, [])
+            i = 0
+            last: tuple[datetime, bool] | None = None
+            for t in samples:
+                if first_ts > t:
+                    continue  # device hadn't reported yet at this instant
+                while i < len(rs) and rs[i][0] <= t:
+                    last = rs[i]
+                    i += 1
+                if last is not None and (t - last[0]) <= stale and last[1]:
+                    counts[t]["on"] += 1
                 else:
-                    buckets[key]["off"] += 1
+                    # OFF by latest reading, or silent/stale — a dark trap is
+                    # not operating.
+                    counts[t]["off"] += 1
 
         data_points = [
             SensorStatusDataPoint(
-                label=ts.strftime(label_fmt),
-                on_count=counts["on"],
-                off_count=counts["off"],
-                timestamp=ts
+                label=t.strftime(label_fmt),
+                on_count=c["on"],
+                off_count=c["off"],
+                timestamp=t,
             )
-            for ts, counts in sorted(buckets.items())
+            for t, c in sorted(counts.items())
         ]
 
         return DashboardSensorStatusChart(
@@ -382,7 +515,7 @@ class DashboardService:
 
     def _compute_breakdown(
         self,
-        device_ids: list[int],
+        device_ids: Optional[list[int]],
         window_start: datetime,
         window_end: datetime,
         group_by: str,
@@ -399,7 +532,7 @@ class DashboardService:
                     MosquitoEvent.timestamp <= window_end,
                 )
             )
-            if device_ids:
+            if device_ids is not None:
                 q = q.filter(MosquitoEvent.device_id.in_(device_ids))
                 
             rows = q.group_by(col).all()
@@ -442,24 +575,25 @@ class DashboardService:
 
     def _compute_correlation_chart(
         self,
-        device_ids: list[int],
+        device_ids: Optional[list[int]],
         window_start: datetime,
         window_end: datetime,
         group_by: str,
     ) -> DashboardCorrelationChart:
-        bucket_delta, label_fmt = _BUCKET[group_by]
+        bucket_delta, label_fmt = _resolve_bucket(group_by, window_start, window_end)
 
         def bucket_key(ts: datetime) -> datetime:
             ts = ts.replace(tzinfo=None) if ts.tzinfo else ts
             n = int((ts - window_start).total_seconds() // bucket_delta.total_seconds())
             return window_start + n * bucket_delta
 
-        # Ordered empty buckets
+        # Ordered empty buckets. `<` — a bucket starting AT window_end could
+        # never collect data and would render as a false drop to zero.
         counts: dict[datetime, int] = {}
         temps: dict[datetime, list] = {}
         hums: dict[datetime, list] = {}
         cursor = window_start
-        while cursor <= window_end:
+        while cursor < window_end:
             counts[cursor] = 0
             temps[cursor] = []
             hums[cursor] = []
@@ -470,7 +604,7 @@ class DashboardService:
             MosquitoEvent.timestamp >= window_start,
             MosquitoEvent.timestamp <= window_end,
         )
-        if device_ids:
+        if device_ids is not None:
             event_q = event_q.filter(MosquitoEvent.device_id.in_(device_ids))
         for event in event_q.all():
             key = bucket_key(event.timestamp)
@@ -482,7 +616,7 @@ class DashboardService:
             SensorDeviceReading.timestamp >= window_start,
             SensorDeviceReading.timestamp <= window_end,
         )
-        if device_ids:
+        if device_ids is not None:
             reading_q = reading_q.filter(SensorDeviceReading.device_id.in_(device_ids))
         for r in reading_q.all():
             key = bucket_key(r.timestamp)
@@ -532,22 +666,22 @@ class DashboardService:
 
     def _compute_genus_heatmap(
         self,
-        device_ids: list[int],
+        device_ids: Optional[list[int]],
         window_start: datetime,
         window_end: datetime,
         group_by: str,
     ) -> DashboardGenusHeatmap:
-        bucket_delta, label_fmt = _BUCKET[group_by]
+        bucket_delta, label_fmt = _resolve_bucket(group_by, window_start, window_end)
 
         def bucket_key(ts: datetime) -> datetime:
             ts = ts.replace(tzinfo=None) if ts.tzinfo else ts
             n = int((ts - window_start).total_seconds() // bucket_delta.total_seconds())
             return window_start + n * bucket_delta
 
-        # Ordered time buckets (column axis)
+        # Ordered time buckets (column axis). `<` — see _compute_correlation_chart.
         bucket_list: list[datetime] = []
         cursor = window_start
-        while cursor <= window_end:
+        while cursor < window_end:
             bucket_list.append(cursor)
             cursor += bucket_delta
         bucket_set = set(bucket_list)
@@ -564,7 +698,7 @@ class DashboardService:
                 MosquitoEvent.timestamp <= window_end,
             )
         )
-        if device_ids:
+        if device_ids is not None:
             q = q.filter(MosquitoEvent.device_id.in_(device_ids))
 
         grid: dict[tuple, int] = {}
@@ -603,25 +737,25 @@ class DashboardService:
 
     def _compute_chart(
         self,
-        device_ids: list[int],
+        device_ids: Optional[list[int]],
         window_start: datetime,
         window_end: datetime,
         group_by: str,
     ) -> DashboardChart:
-        bucket_delta, label_fmt = _BUCKET[group_by]
+        bucket_delta, label_fmt = _resolve_bucket(group_by, window_start, window_end)
 
         event_q = self.session.query(MosquitoEvent).filter(
             MosquitoEvent.timestamp >= window_start,
             MosquitoEvent.timestamp <= window_end,
         )
-        if device_ids:
+        if device_ids is not None:
             event_q = event_q.filter(MosquitoEvent.device_id.in_(device_ids))
         events = event_q.all()
 
-        # Build ordered empty buckets
+        # Build ordered empty buckets. `<` — see _compute_correlation_chart.
         buckets: dict[datetime, int] = {}
         cursor = window_start
-        while cursor <= window_end:
+        while cursor < window_end:
             buckets[cursor] = 0
             cursor += bucket_delta
 

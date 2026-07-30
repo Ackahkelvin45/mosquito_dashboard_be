@@ -5,6 +5,8 @@ from fastapi_mqtt import FastMQTT, MQTTConfig
 from app.device.models import Device, SensorDeviceReading, MosquitoEvent, MosquitoIndividualReading
 from app.core.database import SessionLocal
 from app.core.config import settings
+from app.notification.events import NotificationEvent, emit
+from app.service.device_location_service import apply_reported_position
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,6 +39,34 @@ def _parse_timestamp(value) -> datetime:
     return datetime.utcnow()
 
 
+def _apply_position_from_payload(db, device: Device, data: dict) -> None:
+    """Update the device's position if the payload carried a GPS fix.
+
+    Accepts a few common key spellings so firmware variations don't silently
+    drop the fix, and tolerates a nested {"location": {...}} / {"gps": {...}}.
+    """
+    source = data
+    for nested_key in ("location", "gps", "position"):
+        nested = data.get(nested_key)
+        if isinstance(nested, dict):
+            source = nested
+            break
+
+    lat = next((source.get(k) for k in ("latitude", "lat") if source.get(k) is not None), None)
+    lon = next(
+        (source.get(k) for k in ("longitude", "lon", "lng", "long") if source.get(k) is not None),
+        None,
+    )
+    if lat is None or lon is None:
+        return
+
+    try:
+        apply_reported_position(db, device, lat, lon)
+    except Exception:
+        # A bad GPS fix must never cost us the reading itself.
+        logger.exception("Could not apply reported position for device %s", device.device_uuid)
+
+
 def handle_sensor_data(db, device: Device, data: dict):
     """
     Handles sensor_data topic payload:
@@ -50,9 +80,22 @@ def handle_sensor_data(db, device: Device, data: dict):
         "pressure_internal": 1010,
         "external_light": 200.0,
         "battery": 3.7,
-        "trap_status": false
+        "trap_status": false,
+        "latitude": 5.6059,      # optional GPS fix — updates the device's
+        "longitude": -0.1030     # position and its region/community
     }
     """
+    _apply_position_from_payload(db, device, data)
+
+    # Trap-flip detection needs the state as it was BEFORE this reading lands.
+    previous = (
+        db.query(SensorDeviceReading.trap_status)
+        .filter(SensorDeviceReading.device_id == device.id)
+        .order_by(SensorDeviceReading.timestamp.desc(), SensorDeviceReading.id.desc())
+        .first()
+    )
+    previous_trap_on = bool(previous[0]) if previous else False
+
     reading = SensorDeviceReading(
         device_id=device.id,
         timestamp=_parse_timestamp(data.get("timestamp")),
@@ -70,6 +113,31 @@ def handle_sensor_data(db, device: Device, data: dict):
     device.last_activity = datetime.utcnow()
     db.commit()
     logger.info(f"Sensor reading saved for device {device.device_uuid}")
+
+    emit(db, NotificationEvent.LOW_BATTERY, device=device, voltage=reading.battery_voltage)
+    if reading.trap_status and not previous_trap_on:
+        emit(db, NotificationEvent.TRAP_TRIGGERED, device=device)
+    # External sensors reflect the environment; fall back to internal when absent.
+    temperature = (
+        reading.external_temperature
+        if reading.external_temperature is not None
+        else reading.internal_temperature
+    )
+    emit(db, NotificationEvent.EXTREME_TEMPERATURE, device=device, temperature=temperature)
+    humidity = (
+        reading.external_humidity
+        if reading.external_humidity is not None
+        else reading.internal_humidity
+    )
+    emit(db, NotificationEvent.EXTREME_HUMIDITY, device=device, humidity=humidity)
+    if all(v is None for v in (
+        reading.external_temperature, reading.internal_temperature,
+        reading.external_humidity, reading.internal_humidity,
+        reading.internal_pressure, reading.external_pressure,
+        reading.external_light, reading.battery_voltage,
+    )):
+        emit(db, NotificationEvent.SENSOR_MALFUNCTION, device=device,
+             reason="all sensor fields were empty")
 
 
 def handle_mosquito_event(db, device: Device, data: dict):
@@ -108,6 +176,8 @@ def handle_mosquito_event(db, device: Device, data: dict):
         logger.info(f"No mosquito reading in payload for device {device.device_uuid}")
         return
 
+    _apply_position_from_payload(db, device, data)
+
     event = MosquitoEvent(
         device_id=device.id,
         timestamp=_parse_timestamp(data.get("timestamp")),
@@ -134,6 +204,11 @@ def handle_mosquito_event(db, device: Device, data: dict):
         f"— 1 reading"
     )
 
+    emit(db, NotificationEvent.SPECIES_DETECTED, device=device,
+         species=mosquito_reading.get("species"), genus=mosquito_reading.get("genus"),
+         sex=mosquito_reading.get("sex"), age_group=mosquito_reading.get("age_group"))
+    emit(db, NotificationEvent.ACTIVITY_SURGE, device=device)
+
 
 @mqtt.on_connect()
 def on_connect(client, flags, rc, properties):
@@ -148,12 +223,16 @@ async def on_message(client, topic, payload, qos, properties):
         data = json.loads(payload.decode())
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         logger.error(f"Failed to parse message on topic {topic_str}: {e}")
+        with SessionLocal() as db:
+            emit(db, NotificationEvent.INVALID_PAYLOAD, topic=topic_str, error=str(e))
         return
 
     # Extract device UUID from topic: mosquito_dashboard/<device_uuid>/...
     parts = topic_str.split("/")
     if len(parts) < 3:
         logger.error(f"Malformed topic received: '{topic_str}' — expected format: mosquito_dashboard/<device_uuid>/<event_type>")
+        with SessionLocal() as db:
+            emit(db, NotificationEvent.INVALID_PAYLOAD, topic=topic_str, error="malformed topic")
         return
 
     device_uuid = parts[1]
@@ -166,6 +245,7 @@ async def on_message(client, topic, payload, qos, properties):
                 f"Message received on topic '{topic_str}'. "
                 f"Register the device first before it can publish data."
             )
+            emit(db, NotificationEvent.UNKNOWN_DEVICE, device_uuid=device_uuid, topic=topic_str)
             return
 
         if "sensor_data" in topic_str:

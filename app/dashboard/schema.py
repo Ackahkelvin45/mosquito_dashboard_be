@@ -67,14 +67,30 @@ class GenderDistribution(BaseModel):
     window_end: datetime = Field(..., description="Window end (UTC)")
 
 
+class CommunityMosquitoCountDataPoint(BaseModel):
+    community: str = Field(..., description="Name of the community (monitored settlement)")
+    count: int = Field(..., description="Mosquito count for this community")
+
+
 class RegionMosquitoCountDataPoint(BaseModel):
     region: str = Field(..., description="Name of the region")
-    count: int = Field(..., description="Mosquito count for this region")
+    count: int = Field(..., description="Mosquito count for this region (sum of its communities)")
+    communities: List[CommunityMosquitoCountDataPoint] = Field(
+        default=[],
+        description="Per-community breakdown of this region's count, largest first. "
+        "Lets the client draw each region bar as a stack of its communities.",
+    )
 
 
 class DashboardRegionChart(BaseModel):
     data: List[RegionMosquitoCountDataPoint] = Field(
         default=[], description="Region-bucketed mosquito counts"
+    )
+    communities: List[str] = Field(
+        default=[],
+        description="Every community present in this response, sorted alphabetically. "
+        "A stable ordering the client can bind stack series and colours to, so a "
+        "community keeps its colour when filters change the set of regions shown.",
     )
     group_by: str = Field(..., description="Rolling window applied")
     window_start: datetime = Field(..., description="Window start (UTC)")
@@ -82,18 +98,26 @@ class DashboardRegionChart(BaseModel):
 
 
 class SensorStatusDataPoint(BaseModel):
-    label: str = Field(..., description="Bucket label on the chart x-axis")
-    on_count: int = Field(..., description="Number of ON readings")
-    off_count: int = Field(..., description="Number of OFF readings")
-    timestamp: datetime = Field(..., description="Start of the time bucket (UTC)")
+    label: str = Field(..., description="Sample instant label on the chart x-axis")
+    on_count: int = Field(..., description="Devices whose trap was ON at this instant (recent report)")
+    off_count: int = Field(
+        ..., description="Devices OFF at this instant — includes devices whose last report has gone stale"
+    )
+    timestamp: datetime = Field(..., description="Sample instant (UTC)")
 
 
 class DashboardSensorStatusChart(BaseModel):
     """
     Line chart data for sensor statuses — scoped to `sensor_status_group_by`.
+
+    Each point samples every device's state AT that instant: a device counts once
+    as on/off using its latest reading at or before the instant (carried forward
+    between reports). A device silent longer than the staleness window counts as
+    OFF. Reporting frequency therefore never inflates the counts, and
+    on + off == devices that have reported at least once by then.
     """
     data: List[SensorStatusDataPoint] = Field(
-        default=[], description="Time-bucketed sensor status counts"
+        default=[], description="Sampled per-instant device status counts"
     )
     group_by: str = Field(..., description="Rolling window applied")
     window_start: datetime = Field(..., description="Chart window start (UTC)")

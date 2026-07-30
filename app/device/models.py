@@ -1,5 +1,5 @@
 from app.core.database import Base
-from sqlalchemy import Enum, Integer, String, DateTime, Boolean, Float, ForeignKey, Table, Column
+from sqlalchemy import Enum, Integer, String, DateTime, Boolean, Float, ForeignKey, Table, Column, select, and_
 from sqlalchemy.orm import relationship, mapped_column, Mapped
 from datetime import datetime
 from app.authentication.enums import DeviceStatus
@@ -23,7 +23,6 @@ class DeviceCluster(Base):
     cluster_uuid: Mapped[str] = mapped_column(String(100), unique=True, index=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     description: Mapped[str] = mapped_column(String(255))
-    password: Mapped[str] = mapped_column(String(255))
     public: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -39,6 +38,14 @@ class DeviceCluster(Base):
         secondary=cluster_admins_table,
         back_populates="clusters",
     )
+    # Members: users whose users.cluster_id points here. Distinct from
+    # cluster_admins (the M2M admin link) — a member just belongs to the
+    # cluster and sees its data.
+    users: Mapped[list["User"]] = relationship(
+        "User",
+        foreign_keys="User.cluster_id",
+        back_populates="cluster",
+    )
 
     def __repr__(self):
         return f"DeviceCluster(id={self.id}, name={self.name})"
@@ -50,12 +57,24 @@ class Device(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     device_uuid=mapped_column(String(100), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(100))
-    description: Mapped[str] = mapped_column(String(255))
-    longitude: Mapped[float] = mapped_column(Float)
-    latitude: Mapped[float] = mapped_column(Float)
-    region: Mapped[str] = mapped_column(String(100))
-    gmap_link: Mapped[str] = mapped_column(String(255))
+    # Optional in the API schema, so it must be nullable in the table too —
+    # otherwise creating a device without one is a 500, not a validation error.
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Position is nullable: a device can be registered before anyone knows where
+    # it will sit, and the first reading that carries coordinates fills it in.
+    # From then on the device's own reports are the source of truth.
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # region/community are derived from the coordinates by reverse geocoding,
+    # so they stay correct instead of drifting from a hand-typed guess.
+    region: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    community: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    location_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    gmap_link: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_activity: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    # State marker for the offline detector job: set when the device is first
+    # flagged offline, cleared (with a DEVICE_ONLINE notification) on recovery.
+    offline_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
     total_mosquito_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -63,10 +82,24 @@ class Device(Base):
     mosquito_readings:Mapped[list["MosquitoEvent"]]=relationship("MosquitoEvent", back_populates="device", cascade="all, delete-orphan")
     cluster_id: Mapped[int] = mapped_column(Integer, ForeignKey("device_clusters.id"), nullable=True)
     cluster: Mapped["DeviceCluster"] = relationship("DeviceCluster", back_populates="devices")
+    # Pinned to exactly one row via a correlated LIMIT 1 subquery. A plain
+    # order_by + uselist=False loads EVERY reading for the device on each
+    # access, which grows unbounded as devices stream data.
     latest_reading: Mapped["SensorDeviceReading | None"] = relationship(
         "SensorDeviceReading",
-        primaryjoin="and_(Device.id == SensorDeviceReading.device_id)",
-        order_by="desc(SensorDeviceReading.timestamp)",
+        primaryjoin=lambda: and_(
+            Device.id == SensorDeviceReading.device_id,
+            SensorDeviceReading.id
+            == select(SensorDeviceReading.id)
+            .where(SensorDeviceReading.device_id == Device.id)
+            .order_by(
+                SensorDeviceReading.timestamp.desc(),
+                SensorDeviceReading.id.desc(),
+            )
+            .limit(1)
+            .correlate(Device)
+            .scalar_subquery(),
+        ),
         uselist=False,
         viewonly=True,
         overlaps="device_reading",

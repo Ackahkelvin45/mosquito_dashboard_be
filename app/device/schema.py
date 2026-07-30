@@ -18,9 +18,17 @@ ACTIVE_WINDOW_HOURS = 24
 
 class DeviceBase(BaseModel):
     name: str = Field(...,min_length=2, max_length=100, description="Name of the device")
-    longitude: float = Field(..., description="Longitude of the device location")
-    latitude: float = Field(..., description="Latitude of the device location")
-    region: str = Field(...,min_length=2, max_length=100, description="Region of the device location")
+    # Position and its derived labels are optional: the device fills them in
+    # from its own readings, and reverse geocoding derives region/community.
+    #
+    # Deliberately NO ge/le bounds here. DeviceResponse inherits this model, and
+    # a range check on an OUTPUT field turns any historically out-of-range row
+    # into a 500 for the whole list endpoint. Bounds belong on the input
+    # schemas (DeviceCreate/DeviceUpdate) only.
+    longitude: Optional[float] = Field(None, description="Longitude of the device location")
+    latitude: Optional[float] = Field(None, description="Latitude of the device location")
+    region: Optional[str] = Field(None, max_length=100, description="Region, derived from the reported coordinates")
+    community: Optional[str] = Field(None, max_length=150, description="Community/locality, derived from the reported coordinates")
     device_uuid: Optional[str] = Field(None, description="Unique UUID for the device")
     description: Optional[str] = Field(None, max_length=255, description="Description of the device")
     gmap_link: Optional[str] = Field(None, max_length=255, description="Google Maps link for the device location")
@@ -32,20 +40,32 @@ class DeviceBase(BaseModel):
 
 
 class DeviceCreate(DeviceBase):
-    device_uuid: Optional[str] = Field(None, description="Unique UUID for the device")
+    # validate_default=True is essential: Pydantic skips validators for fields
+    # that are absent from the payload, so without it a client that OMITS
+    # device_uuid gets None — and a device with no UUID can never be matched to
+    # an MQTT topic or an ingest URL.
+    device_uuid: Optional[str] = Field(
+        None, validate_default=True, description="Unique UUID for the device (generated when omitted)"
+    )
     cluster_id: Optional[int] = Field(None, description="ID of the device cluster this device belongs to")
+    # Range checks apply to input only — see the note on DeviceBase.
+    longitude: Optional[float] = Field(None, ge=-180, le=180, description="Longitude of the device location")
+    latitude: Optional[float] = Field(None, ge=-90, le=90, description="Latitude of the device location")
 
     @field_validator("device_uuid", mode="before")
     @classmethod
     def generate_uuid(cls, v):
+        if isinstance(v, str):
+            v = v.strip()
         return v or str(uuid.uuid4())
     
 
 class DeviceUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=100, description="Name of the device")
-    longitude: Optional[float] = Field(None, description="Longitude of the device location")
-    latitude: Optional[float] = Field(None, description="Latitude of the device location")
-    region: Optional[str] = Field(None, min_length=2, max_length=100, description="Region of the device location")
+    longitude: Optional[float] = Field(None, ge=-180, le=180, description="Longitude of the device location")
+    latitude: Optional[float] = Field(None, ge=-90, le=90, description="Latitude of the device location")
+    region: Optional[str] = Field(None, max_length=100, description="Region (normally derived from reported coordinates)")
+    community: Optional[str] = Field(None, max_length=150, description="Community (normally derived from reported coordinates)")
     description: Optional[str] = Field(None, max_length=255, description="Description of the device")
     gmap_link: Optional[str] = Field(None, max_length=255, description="Google Maps link for the device location")
     device_uuid: Optional[str] = Field(None, description="Unique UUID for the device")
@@ -58,18 +78,18 @@ class DeviceUpdate(BaseModel):
 class DeviceClusterCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=100, description="Name of the device cluster")
     description: Optional[str] = Field(None, max_length=255, description="Description of the device cluster")
-    password: str = Field(..., min_length=6, description="Password for the device cluster")
     public: bool = Field(False, description="Whether the device cluster is publicly visible")
     cluster_admins: Optional[list[int]] = Field(None, description="List of user IDs administering the cluster")
+    users: Optional[list[int]] = Field(None, description="List of user IDs to assign to the cluster as members")
 
 
- 
+
 class DeviceClusterUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=100, description="Name of the device cluster")
     description: Optional[str] = Field(None, max_length=255, description="Description of the device cluster")
-    password: Optional[str] = Field(None, min_length=6, description="Password for the device cluster")
     public: Optional[bool] = Field(None, description="Whether the device cluster is publicly visible")
     cluster_admins: Optional[list[int]] = Field(None, description="List of user IDs administering the cluster")
+    users: Optional[list[int]] = Field(None, description="List of user IDs to assign to the cluster as members (replaces the current member list)")
 
 class SensorDataPayload(BaseModel):
     timestamp: datetime
@@ -82,6 +102,11 @@ class SensorDataPayload(BaseModel):
     external_light: float = 0.0
     battery: float
     trap_status: Optional[bool] = False
+    # Optional GPS fix. When present it updates the device's stored position and
+    # triggers reverse geocoding of region/community. Accepts decimal degrees or
+    # scaled integers (e.g. microdegrees) — see utils.coordinates.
+    latitude: Optional[float] = Field(None, description="Device latitude at the time of the reading")
+    longitude: Optional[float] = Field(None, description="Device longitude at the time of the reading")
 
 
 
@@ -109,6 +134,7 @@ class DeviceResponse(DeviceBase):
     updated_at: datetime = Field(...,description="Updated at timestamp of the device")
     total_mosquito_count: int = Field(...,description="Total mosquito count recorded by the device")
     cluster_id: Optional[int] = Field(None, description="ID of the device cluster this device belongs to")
+    location_updated_at: Optional[datetime] = Field(None, description="When the device last reported a new position")
     latest_reading: Optional[SensorDataResponse] = Field(None, description="Latest sensor reading from the device")
 
     @computed_field(
@@ -143,10 +169,14 @@ class DeviceClusterResponse(BaseModel):
     admins: list[UserResponse] = Field(
         default=[],
         description="List of users administering the cluster",
-        alias="cluster_admins",         
-        serialization_alias="admins",   
+        alias="cluster_admins",
+        serialization_alias="admins",
     )
- 
+    users: list[UserResponse] = Field(
+        default=[],
+        description="List of users assigned to the cluster as members",
+    )
+
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
  
 
@@ -165,6 +195,10 @@ class MosquitoIndividualPayload(BaseModel):
 class MosquitoEventPayload(BaseModel):
     timestamp: datetime
     mosquito_reading: MosquitoIndividualPayload = Field(..., description="The mosquito reading for this event")
+    # Same optional GPS fix as SensorDataPayload — some firmware attaches the
+    # position to detection events rather than to sensor frames.
+    latitude: Optional[float] = Field(None, description="Device latitude at the time of the event")
+    longitude: Optional[float] = Field(None, description="Device longitude at the time of the event")
 
 
 

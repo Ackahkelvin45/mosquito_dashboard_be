@@ -20,6 +20,15 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.USER)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+    # The single cluster this user belongs to (their membership). Distinct from
+    # `clusters` below, which is the many-to-many admin link. Nullable: a user
+    # can exist before being assigned to a cluster.
+    cluster_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("device_clusters.id"), nullable=True)
+    cluster: Mapped["DeviceCluster | None"] = relationship(
+        "DeviceCluster",
+        foreign_keys=[cluster_id],
+        back_populates="users",
+    )
     researcher_request: Mapped["ResearcherRequest | None"] = relationship(
         "ResearcherRequest",
         back_populates="user",

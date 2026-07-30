@@ -23,10 +23,6 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
             .all()
         )
 
-    def _generate_cluster_password(self) -> str:
-        # ~16-20 chars, URL-safe.
-        return secrets.token_urlsafe(12)
-
     def _generate_cluster_name(self, user: User) -> str:
         base = f"{user.first_name}-{user.last_name}-{user.id}".strip().lower()
         base = re.sub(r"[^a-z0-9\\-]+", "-", base).strip("-")
@@ -47,7 +43,6 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
             cluster = DeviceCluster(
                 name=self._generate_cluster_name(user),
                 description=f"Cluster for {user.full_name}",
-                password=self._generate_cluster_password(),
                 public=False,
                 status=ClusterStatus.APPROVED,
                 cluster_admins=[user],
@@ -58,8 +53,6 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
 
         if user not in cluster.cluster_admins:
             cluster.cluster_admins.append(user)
-        if not cluster.password:
-            cluster.password = self._generate_cluster_password()
 
         return cluster
 
