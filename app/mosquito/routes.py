@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional, List
 
 from app.core.database import get_db
-from utils.protected_route import get_current_user
+from utils.protected_route import get_current_user_or_guest
 from app.core.pagination import Page
 from app.service.device_service import DeviceService
 from utils.time_range import compute_datetime_range, TimeRange
@@ -24,7 +24,8 @@ router = APIRouter(tags=["mosquito"])
 @router.get("/filter-options", status_code=status.HTTP_200_OK)
 def get_mosquito_filter_options(
     session: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    # Guests see filter values derived from public-cluster data only.
+    current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     """Distinct regions, genus and species values for the historical-data filter dropdowns."""
     try:
@@ -48,7 +49,7 @@ def get_all_mosquito_events(
     device_uuid: Optional[List[str]] = Query(default=None),
     genus: Optional[List[str]] = Query(default=None, description="Repeatable: matches any of the given genus values"),
     species: Optional[List[str]] = Query(default=None, description="Repeatable: matches any of the given species values"),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     try:
         if start_date is None and end_date is None and range_:

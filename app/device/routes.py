@@ -11,7 +11,7 @@ from app.device.chart_schema import DeviceChartsResponse
 from app.core.database import get_db
 from app.core.pagination import Page
 from sqlalchemy.orm import Session
-from utils.protected_route import get_current_user
+from utils.protected_route import get_current_user, get_current_user_or_guest
 from app.authentication.schema import UserResponse
 from app.core.security.permissions import (
     require_super_admin, require_admin, visible_cluster_ids, is_super_admin,
@@ -59,7 +59,8 @@ def get_devices(
     latitude: Optional[float] = Query(default=None),
     cluster_id: Optional[List[int]] = Query(default=None, description="Repeatable: matches devices in any of the given clusters"),
     trap_status: Optional[bool] = Query(default=None, description="Filter by device on/off status (latest reading's trap_status)"),
-    current_user: UserResponse = Depends(get_current_user),
+    # Read-only listing is open to guests, scoped to public clusters.
+    current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     try:
         allowed = visible_cluster_ids(session, current_user)
@@ -108,7 +109,7 @@ def get_clusters(
     session: Session = Depends(get_db),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     try:
         allowed = visible_cluster_ids(session, current_user)
@@ -128,7 +129,7 @@ def create_cluster(cluster_data: DeviceClusterCreate, session: Session = Depends
 
 @router.get("/clusters/{cluster_id}", status_code=status.HTTP_200_OK, response_model=DeviceClusterResponse)
 def get_cluster_by_id(cluster_id: int, session: Session = Depends(get_db),
-                      current_user: UserResponse = Depends(get_current_user)):
+                      current_user: UserResponse = Depends(get_current_user_or_guest)):
     try:
         allowed = visible_cluster_ids(session, current_user)
         if allowed is not None and cluster_id not in allowed:
@@ -160,7 +161,7 @@ def delete_cluster(cluster_id: int, session: Session = Depends(get_db),
 
 @router.get("/uuid/{device_uuid}", status_code=status.HTTP_200_OK, response_model=DeviceResponse)
 def get_device_by_uuid(device_uuid: str, session: Session = Depends(get_db),
-                       current_user: UserResponse = Depends(get_current_user)):
+                       current_user: UserResponse = Depends(get_current_user_or_guest)):
     try:
         allowed = visible_cluster_ids(session, current_user)
         return DeviceService(session).get_device_by_uuid(device_uuid, allowed_cluster_ids=allowed)
@@ -184,7 +185,7 @@ def get_sensor_readings(
     session: Session = Depends(get_db),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     try:
         allowed = visible_cluster_ids(session, current_user)
@@ -214,7 +215,7 @@ def get_mosquito_events(
     search: Optional[str] = Query(default=None),
     range_: Optional[TimeRange] = Query(default=None, alias="range"),
     at: Optional[datetime] = Query(default=None),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     try:
         if start_date is None and end_date is None and range_:
@@ -252,7 +253,7 @@ def get_device_charts(
     device_id: int,
     session: Session = Depends(get_db),
     group_by: str = Query(default="month", pattern="^(hour|day|week|month|year)$"),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     try:
         # 404 if the device is outside the caller's scope before charting it.
@@ -265,7 +266,7 @@ def get_device_charts(
 
 @router.get("/{device_id}", status_code=status.HTTP_200_OK, response_model=DeviceResponse)
 def get_device_by_id(device_id: int, session: Session = Depends(get_db),
-                     current_user: UserResponse = Depends(get_current_user)):
+                     current_user: UserResponse = Depends(get_current_user_or_guest)):
     try:
         allowed = visible_cluster_ids(session, current_user)
         return DeviceService(session).get_device_by_id(device_id, allowed_cluster_ids=allowed)

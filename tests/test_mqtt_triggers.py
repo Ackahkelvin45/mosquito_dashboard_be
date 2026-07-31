@@ -233,7 +233,11 @@ class TestHandleMosquitoEvent:
         for _ in range(NOTIFY_SURGE_THRESHOLD):  # 20 pre-existing + 1 new = 21
             db_session.add(MosquitoEvent(device_id=device.id, timestamp=now, count=1))
         db_session.commit()
-        handle_mosquito_event(db_session, device, _mosquito_payload())
+        # The new event must land inside the rolling surge window, so it needs
+        # a current timestamp — the payload default is a fixed past date.
+        payload = _mosquito_payload()
+        payload["timestamp"] = now.isoformat()
+        handle_mosquito_event(db_session, device, payload)
         assert NotificationType.ACTIVITY_SURGE in _types(db_session)
 
 

@@ -59,7 +59,7 @@ from app.notification.enums import (
 )
 from app.notification.models import Notification
 from app.notification.service import NotificationService
-from utils.protected_route import get_current_user
+from utils.protected_route import get_current_user, get_current_user_or_guest
 
 import app.notification.service as _service_module
 
@@ -146,6 +146,10 @@ def login_as(app):
     def _login(user: User) -> UserResponse:
         response = UserResponse.model_validate(user)
         app.dependency_overrides[get_current_user] = lambda: response
+        # Guest-readable endpoints resolve the caller through
+        # get_current_user_or_guest — override it too so a "logged in" test
+        # user is seen there as well (not mistaken for an anonymous guest).
+        app.dependency_overrides[get_current_user_or_guest] = lambda: response
         return response
 
     return _login

@@ -45,11 +45,17 @@ def is_super_admin(user: UserResponse) -> bool:
     return user.role == UserRole.SUPER_ADMIN
 
 
+def is_guest(user: UserResponse) -> bool:
+    return user.role == UserRole.GUEST
+
+
 def visible_cluster_ids(session: Session, user: UserResponse) -> Optional[set[int]]:
     """Cluster ids the user may see.
 
     Returns None for a super admin — meaning "no restriction, all clusters".
-    Everyone else sees their own cluster plus every public cluster.
+    Everyone else sees their own cluster plus every public cluster. The
+    anonymous GUEST principal has no cluster_id, so it falls through to
+    public clusters only.
     """
     if is_super_admin(user):
         return None

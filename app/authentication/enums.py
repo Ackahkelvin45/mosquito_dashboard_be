@@ -5,6 +5,9 @@ class UserRole(StrEnum):
     ADMIN = "ADMIN"
     USER = "USER"
     SUPER_ADMIN = "SUPER_ADMIN"
+    # Anonymous read-only visitor ("View as Guest"). Never stored on a real
+    # user row — synthesised per-request by get_current_user_or_guest.
+    GUEST = "GUEST"
 
 
 class ApprovalStatus(StrEnum):

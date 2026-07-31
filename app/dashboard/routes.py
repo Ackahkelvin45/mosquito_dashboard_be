@@ -6,7 +6,7 @@ from typing import Optional, Literal
 from datetime import datetime
 
 from app.core.database import get_db
-from utils.protected_route import get_current_user
+from utils.protected_route import get_current_user_or_guest
 from app.service.dashboard_service import DashboardService
 from app.dashboard.schema import DashboardResponse
 from app.authentication.schema import UserResponse
@@ -112,7 +112,8 @@ def get_dashboard(
         default=None,
         description="Scope the entire dashboard to a single device.",
     ),
-    current_user: UserResponse = Depends(get_current_user),
+    # Guests (no auth header) get the dashboard scoped to public clusters only.
+    current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     if (start_date is None) != (end_date is None):
         raise HTTPException(
