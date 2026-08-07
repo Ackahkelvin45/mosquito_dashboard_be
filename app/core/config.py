@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     TOPIC_SENSOR_DATA: str
     TOPIC_MOSQUITO_COUNT: str
     MQTT_CLIENT_ID: str
+    CORS_ORIGINS: str = "http://localhost:3000,https://mosquitosurveillancedashboard.website"
 
     class Config:
         env_file = ".env"

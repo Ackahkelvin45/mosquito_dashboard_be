@@ -15,6 +15,7 @@ from app.notification.push_routes import router as push_router
 from utils.protected_route import get_current_user
 from app.authentication.schema import UserResponse
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.config import settings
 from app.core.mqtt_client import mqtt
 from app.jobs.scheduler import register_all_jobs, scheduler
 
@@ -72,7 +73,7 @@ def create_application() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000","https://mosquitosurveillancedashboard.website"],  # TODO: Change to specific origins
+        allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
