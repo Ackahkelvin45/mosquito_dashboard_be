@@ -238,7 +238,10 @@ class DeviceRepository(BaseRepository[Device]):
                 battery_voltage=payload.battery,
                 trap_status=payload.trap_status,
             )
-            device.last_activity = payload.timestamp
+            # Heartbeat uses server receive time, never the device-supplied
+            # timestamp: a skewed clock or an SD-queue backfill of old readings
+            # must not make a live device look offline (or vice versa).
+            device.last_activity = datetime.utcnow()
             self.session.add(reading)
             self.session.commit()
             self.session.refresh(reading)
@@ -272,7 +275,8 @@ class DeviceRepository(BaseRepository[Device]):
             mosquito_reading=mosquito_reading,
         )
         device.total_mosquito_count = (device.total_mosquito_count or 0) + 1
-        device.last_activity = payload.timestamp
+        # Server receive time, not payload time — see create_sensor_reading.
+        device.last_activity = datetime.utcnow()
         self.session.add(event)
         self.session.commit()
         self.session.refresh(event)
@@ -391,6 +395,54 @@ class DeviceRepository(BaseRepository[Device]):
             .order_by(MosquitoEvent.timestamp.desc())
             .all()
         )
+
+    def get_sensor_readings_page(
+        self,
+        page: int,
+        page_size: int,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        search: str | None = None,
+        region: List[str] | None = None,
+        device_uuids: List[str] | None = None,
+        allowed_cluster_ids: Optional[set] = None,
+    ) -> tuple[List[SensorDeviceReading], int]:
+        """Fleet-wide sensor readings, newest first.
+
+        Paginates in SQL (offset/limit), not via paginate(): readings arrive
+        every few seconds per device, so loading the full match is not viable.
+        """
+        q = (
+            self.session.query(SensorDeviceReading)
+            .join(Device, SensorDeviceReading.device_id == Device.id)
+        )
+        if start_date:
+            q = q.filter(SensorDeviceReading.timestamp >= start_date)
+        if end_date:
+            q = q.filter(SensorDeviceReading.timestamp <= end_date)
+        if search:
+            like = f"%{search}%"
+            q = q.filter(or_(
+                Device.name.ilike(like),
+                Device.device_uuid.ilike(like),
+                Device.region.ilike(like),
+            ))
+        if region:
+            q = q.filter(Device.region.in_(region))
+        if device_uuids:
+            q = q.filter(Device.device_uuid.in_(device_uuids))
+        if allowed_cluster_ids is not None:
+            q = q.filter(Device.cluster_id.in_(allowed_cluster_ids))
+
+        total = q.count()
+        rows = (
+            q.options(joinedload(SensorDeviceReading.device))
+            .order_by(SensorDeviceReading.timestamp.desc(), SensorDeviceReading.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return rows, total
 
     def get_all_mosquito_events(
         self,

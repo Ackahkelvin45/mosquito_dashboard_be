@@ -33,7 +33,7 @@ empty string (case-insensitive) as off; anything else is on.
 | Var | Default | Purpose |
 |---|---|---|
 | `NOTIFY_OFFLINE_CHECK_SEC` | `120` | offline-detection job interval |
-| `NOTIFY_OFFLINE_AFTER_MIN` | `30` | minutes without activity before a device counts as offline |
+| `NOTIFY_OFFLINE_AFTER_MIN` | `5` | minutes without activity before a device counts as offline |
 | `NOTIFY_CLEANUP_SEC` | `3600` | cleanup job interval (expired + soft-deleted > 30 d) |
 | `NOTIFY_PUSH_RETRY_SEC` | `600` | push-retry job interval **and** the per-attempt backoff base (a delivery waits `attempts × this` between retries) |
 | `NOTIFY_HEALTH_CHECK_SEC` | `86400` | device-health sweep interval |

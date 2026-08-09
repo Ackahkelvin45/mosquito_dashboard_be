@@ -1,5 +1,8 @@
-# Test stack — runs alongside the normal stack on separate ports/volumes.
-# Requires ../mosquito_dashboard_fe checked out as a sibling directory.
+# Backend test stack (db + broker + api) — runs alongside the normal stack
+# on separate ports/volumes. The frontend has its own docker-compose.test.yml
+# in mosquito_dashboard_fe; they don't need to share a network or directory
+# layout since the deployed frontend calls the API over its public HTTPS URL,
+# not the docker network.
 #   docker compose -f docker-compose.test.yml up -d --build
 name: mosquito-test
 
@@ -47,16 +50,6 @@ services:
         condition: service_healthy
       mosquitto:
         condition: service_healthy
-
-  frontend:
-    build:
-      context: ../mosquito_dashboard_fe
-      args:
-        ENV_FILE: .env.test
-    ports:
-      - "3001:3000"
-    depends_on:
-      - api
 
 volumes:
   postgres_data_test:

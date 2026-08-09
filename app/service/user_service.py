@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from app.authentication.repository.userrepository import UserRepository
 from app.authentication.repository.password_reset_repository import PasswordResetRepository
 from app.device.models import DeviceCluster
-from app.authentication.schema import UserCreate, UserLogin, UserResponse, UserLoginResponse
+from app.authentication.schema import UserCreate, UserLogin, UserResponse, UserLoginResponse, UserUpdate
 from app.core.security.authhandler import AuthHandler
 from app.core.security.hashHelper import HashHelper
 from app.notification.events import NotificationEvent, emit
@@ -39,6 +39,34 @@ class UserService:
         user_data.password = self.hash_helper.hash_password(user_data.password)
         user = self.user_repository.create_user(user_data)
         emit(self.session, NotificationEvent.USER_REGISTERED, user=user)
+        return UserResponse.model_validate(user)
+
+    def update_user(self, user_id: int, data: UserUpdate) -> UserResponse:
+        user = self.user_repository.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Only fields the client actually sent — defaults never clobber.
+        updates = data.model_dump(exclude_unset=True, exclude={"id"})
+
+        new_email = updates.get("email")
+        if new_email and new_email != user.email and self.user_repository.user_exists_by_email(new_email):
+            raise HTTPException(status_code=409, detail="A user with this email already exists")
+
+        new_cluster_id = updates.get("cluster_id")
+        if new_cluster_id is not None:
+            cluster = (
+                self.session.query(DeviceCluster)
+                .filter(DeviceCluster.id == new_cluster_id)
+                .first()
+            )
+            if not cluster:
+                raise HTTPException(status_code=404, detail=f"Cluster with id {new_cluster_id} not found")
+
+        for field, value in updates.items():
+            setattr(user, field, value)
+        self.session.commit()
+        self.session.refresh(user)
         return UserResponse.model_validate(user)
 
     def login_user(self, login_data: UserLogin) -> UserLoginResponse:

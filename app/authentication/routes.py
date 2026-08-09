@@ -142,6 +142,28 @@ def get_user_by_id(user_id: int, session: Session = Depends(get_db),
     
 
 
+@router.patch("/users/{user_id}",status_code=status.HTTP_200_OK,response_model=UserResponse)
+def update_user(user_id: int, update_data: UserUpdate, session: Session = Depends(get_db),
+                current_user: UserResponse = Depends(require_admin)):
+    try:
+        service = UserService(session)
+        existing = service.get_user_by_id(user_id)
+        if not is_super_admin(current_user):
+            # Cluster admins manage only their own cluster's users…
+            if existing.cluster_id != current_user.cluster_id:
+                raise HTTPException(status_code=404, detail="User not found")
+            # …may not promote anyone to super admin…
+            if update_data.role == UserRole.SUPER_ADMIN:
+                raise HTTPException(status_code=403, detail="Only a super admin can grant the super admin role")
+            # …and may not move users to another cluster.
+            if "cluster_id" in update_data.model_fields_set and update_data.cluster_id != current_user.cluster_id:
+                raise HTTPException(status_code=403, detail="Only a super admin can move users between clusters")
+        return service.update_user(user_id, update_data)
+    except Exception as e:
+        raise e
+
+
+
 @router.get("/researcher-requests",status_code=status.HTTP_200_OK,response_model=Page[ResearcherRequestResponse],
             dependencies=[Depends(get_current_user)])
 def get_researcher_requests(session: Session = Depends(get_db),

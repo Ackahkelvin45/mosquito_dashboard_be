@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     TOPIC_MOSQUITO_COUNT: str
     MQTT_CLIENT_ID: str
     CORS_ORIGINS: str = "http://localhost:3000,https://mosquitosurveillancedashboard.website"
+    # Log every SQL statement — set SQL_ECHO=true in .env when debugging locally.
+    SQL_ECHO: bool = False
 
     class Config:
         env_file = ".env"

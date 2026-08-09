@@ -54,7 +54,8 @@ class UserResponse(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
 class UserUpdate(UserBase):
-    id: int = Field(...,description="ID of the user")
+    # Optional: the path parameter is the authority on which user is edited.
+    id: Optional[int] = Field(None,description="ID of the user")
     first_name: Optional[str] = Field(None,min_length=2, max_length=50, description="First name of the user")
     last_name: Optional[str] = Field(None,min_length=2, max_length=50, description="Last name of the user")
     email: Optional[EmailStr] = Field(None,description="Email of the user")

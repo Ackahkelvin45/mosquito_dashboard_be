@@ -1,12 +1,19 @@
 from pydantic import BaseModel, EmailStr,Field,field_validator,ConfigDict,computed_field
 from typing import Union,Optional
 from datetime import datetime, timezone, timedelta
+import os
 import uuid
 from app.authentication.schema import UserResponse
 
 
-# A device is considered active if it has reported activity within this window.
+# Staleness window for the STATUS CHARTS only (sampling trap state over time).
 ACTIVE_WINDOW_HOURS = 24
+
+# Single source of truth for device on/off: silent longer than this = offline.
+# Shared by the is_active badge and the offline-detection job so they can
+# never disagree. Firmware heartbeats every ~5s (sensor_data), so 5 minutes
+# is ~60 missed beats — far beyond a WiFi blip or an SD-queue flush gap.
+OFFLINE_AFTER_MIN = int(os.getenv("NOTIFY_OFFLINE_AFTER_MIN", "5"))
 
 
 
@@ -127,6 +134,13 @@ class SensorDataResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class SensorReadingWithDeviceResponse(SensorDataResponse):
+    """A sensor reading plus its device identity — the fleet-wide Sensor Data page rows."""
+    device_uuid: Optional[str] = None
+    device_name: Optional[str] = None
+    region: Optional[str] = None
+
+
 class DeviceResponse(DeviceBase):
     id: int = Field(...,description="ID of the device")
     last_activity: datetime = Field(...,description="Last activity timestamp of the device")
@@ -138,7 +152,7 @@ class DeviceResponse(DeviceBase):
     latest_reading: Optional[SensorDataResponse] = Field(None, description="Latest sensor reading from the device")
 
     @computed_field(
-        description=f"Active if the device reported activity within the last {ACTIVE_WINDOW_HOURS}h; inactive if it never reported or has been silent longer.",
+        description=f"Online if the device reported activity within the last {OFFLINE_AFTER_MIN} min (same threshold as the offline-detection job); offline if it never reported or has been silent longer.",
     )
     @property
     def is_active(self) -> bool:
@@ -149,7 +163,7 @@ class DeviceResponse(DeviceBase):
         # last_activity may be stored timezone-naive; compare on the same basis.
         if last.tzinfo is None:
             now = now.replace(tzinfo=None)
-        return (now - last) <= timedelta(hours=ACTIVE_WINDOW_HOURS)
+        return (now - last) <= timedelta(minutes=OFFLINE_AFTER_MIN)
 
     model_config = ConfigDict(from_attributes=True)
 

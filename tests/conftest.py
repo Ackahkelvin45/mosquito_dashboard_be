@@ -45,6 +45,7 @@ from app.core.database import Base, get_db
 
 # Import every model module so Base.metadata knows the full schema.
 import app.authentication.models  # noqa: F401
+import app.api_access.models  # noqa: F401
 import app.device.models  # noqa: F401
 import app.notification.models  # noqa: F401
 

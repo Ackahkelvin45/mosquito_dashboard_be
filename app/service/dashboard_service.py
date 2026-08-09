@@ -256,26 +256,27 @@ class DashboardService:
         active_objs = [d for d in all_devices if d.id in active_device_ids]
         total_regions = len({d.region for d in active_objs if d.region})
 
-        # Averages from ALL sensor readings in the window (not just latest)
+        # Averages from ALL sensor readings in the window (not just latest).
+        # SQL AVG ignores NULLs per column — same semantics as filtering each
+        # list in Python, without loading every reading row into memory.
         avg_humidity = avg_temp = avg_battery = None
         if device_ids:
-            readings = (
-                self.session.query(SensorDeviceReading)
+            row = (
+                self.session.query(
+                    func.avg(SensorDeviceReading.external_humidity),
+                    func.avg(SensorDeviceReading.internal_temperature),
+                    func.avg(SensorDeviceReading.battery_voltage),
+                )
                 .filter(
                     SensorDeviceReading.device_id.in_(device_ids),
                     SensorDeviceReading.timestamp >= window_start,
                     SensorDeviceReading.timestamp <= window_end,
                 )
-                .all()
+                .one()
             )
-            if readings:
-                humidities = [r.external_humidity       for r in readings if r.external_humidity       is not None]
-                temps      = [r.internal_temperature    for r in readings if r.internal_temperature    is not None]
-                batteries  = [r.battery_voltage         for r in readings if r.battery_voltage         is not None]
-
-                avg_humidity = round(sum(humidities) / len(humidities), 2) if humidities else None
-                avg_temp     = round(sum(temps)      / len(temps),      2) if temps      else None
-                avg_battery  = round(sum(batteries)  / len(batteries),  2) if batteries  else None
+            avg_humidity = round(float(row[0]), 2) if row[0] is not None else None
+            avg_temp     = round(float(row[1]), 2) if row[1] is not None else None
+            avg_battery  = round(float(row[2]), 2) if row[2] is not None else None
 
         return DashboardTotals(
             total_mosquito_count=total_mosquito_count,
@@ -543,8 +544,30 @@ class DashboardService:
             data.sort(key=lambda x: x.count, reverse=True)
             return data
 
+        # Sex tab shows sex + genus combined, e.g. "male Aedes".
+        # Normalize case/whitespace in SQL so "Male" / "male " / "MALE"
+        # accumulate into one bucket instead of splitting into separate rows.
+        # Grouping is fully lowercased (initcap is Postgres-only and breaks on
+        # the sqlite test engine); the genus is re-capitalized for display below.
+        sex_norm = func.coalesce(
+            func.nullif(func.lower(func.trim(MosquitoIndividualReading.sex)), ""),
+            "unknown",
+        )
+        genus_norm = func.coalesce(
+            func.nullif(func.lower(func.trim(MosquitoIndividualReading.genus)), ""),
+            "unknown",
+        )
+        sex_genus = func.concat(sex_norm, " ", genus_norm)
+
+        sex_items = []
+        for item in get_breakdown_for_column(sex_genus):
+            sex_part, _, genus_part = item.name.partition(" ")
+            sex_items.append(
+                BreakdownItem(name=f"{sex_part} {genus_part.capitalize()}".strip(), count=item.count)
+            )
+
         return DashboardBreakdown(
-            sex=get_breakdown_for_column(MosquitoIndividualReading.sex),
+            sex=sex_items,
             genus=get_breakdown_for_column(MosquitoIndividualReading.genus),
             species=get_breakdown_for_column(MosquitoIndividualReading.species),
             age_group=get_breakdown_for_column(MosquitoIndividualReading.age_group),

@@ -12,6 +12,8 @@ from app.device.routes import router as device_router
 from app.dashboard.routes import router as dashboard_router
 from app.notification.routes import router as notification_router
 from app.notification.push_routes import router as push_router
+from app.api_access.routes import router as api_keys_router
+from app.api_access.public_routes import router as public_api_router
 from utils.protected_route import get_current_user
 from app.authentication.schema import UserResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -111,6 +113,8 @@ app.include_router(mosquito_router, tags=["mosquito"], prefix="/mosquito")
 app.include_router(dashboard_router, tags=["dashboard"], prefix="/dashboard")
 app.include_router(notification_router, tags=["notifications"], prefix="/notifications")
 app.include_router(push_router, tags=["push"], prefix="/push")
+app.include_router(api_keys_router, tags=["api-keys"], prefix="/api-keys")
+app.include_router(public_api_router, tags=["public-api-v1"], prefix="/api/v1")
 
 
 # ---------------------------

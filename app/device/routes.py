@@ -5,6 +5,7 @@ from app.device.schema import (
     DeviceCreate, DeviceResponse, DeviceUpdate,
     DeviceClusterCreate, DeviceClusterResponse, DeviceClusterUpdate,
     MosquitoEventPayload, SensorDataPayload, SensorDataResponse,
+    SensorReadingWithDeviceResponse,
     MosquitoIndividualPayload, MosquitoIndividualResponse, MosquitoEventResponse,
 )
 from app.device.chart_schema import DeviceChartsResponse
@@ -175,6 +176,31 @@ def ingest_sensor_reading(device_uuid: str, payload: SensorDataPayload, session:
     try:
         allowed = visible_cluster_ids(session, current_user)
         return DeviceService(session).ingest_sensor_reading(device_uuid, payload, allowed_cluster_ids=allowed)
+    except Exception as e:
+        raise e
+
+
+@router.get("/sensor-readings", status_code=status.HTTP_200_OK, response_model=Page[SensorReadingWithDeviceResponse])
+def get_all_sensor_readings(
+    session: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    start_date: Optional[datetime] = Query(default=None),
+    end_date: Optional[datetime] = Query(default=None),
+    search: Optional[str] = Query(default=None, description="Matches device name, UUID or region"),
+    region: Optional[List[str]] = Query(default=None, description="Repeatable: matches any of the given regions"),
+    device_uuid: Optional[List[str]] = Query(default=None),
+    current_user: UserResponse = Depends(get_current_user_or_guest),
+):
+    """Fleet-wide sensor readings for the Sensor Data page, newest first."""
+    try:
+        allowed = visible_cluster_ids(session, current_user)
+        return DeviceService(session).get_all_sensor_readings(
+            page=page, page_size=page_size,
+            start_date=start_date, end_date=end_date, search=search,
+            region=region, device_uuids=device_uuid,
+            allowed_cluster_ids=allowed,
+        )
     except Exception as e:
         raise e
 

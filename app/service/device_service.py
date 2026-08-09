@@ -9,7 +9,7 @@ from app.device.repository.device_repository import DeviceRepository
 from app.notification.events import NotificationEvent, emit
 from app.device.schema import (
     DeviceCreate, DeviceResponse, DeviceUpdate,
-    SensorDataPayload, SensorDataResponse,
+    SensorDataPayload, SensorDataResponse, SensorReadingWithDeviceResponse,
     MosquitoEventPayload, MosquitoIndividualResponse, MosquitoEventResponse,
 )
 
@@ -148,6 +148,36 @@ class DeviceService:
         return Page[SensorDataResponse](
             items=[SensorDataResponse.model_validate(r) for r in sliced],
             total=total, page=page, page_size=page_size, total_pages=total_pages,
+        )
+
+    def get_all_sensor_readings(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        search: str | None = None,
+        region: List[str] | None = None,
+        device_uuids: List[str] | None = None,
+        allowed_cluster_ids: Optional[set] = None,
+    ) -> Page[SensorReadingWithDeviceResponse]:
+        rows, total = self.device_repository.get_sensor_readings_page(
+            page=page, page_size=page_size,
+            start_date=start_date, end_date=end_date, search=search,
+            region=region, device_uuids=device_uuids,
+            allowed_cluster_ids=allowed_cluster_ids,
+        )
+        total_pages = (total + page_size - 1) // page_size if page_size else 0
+        items = []
+        for r in rows:
+            item = SensorReadingWithDeviceResponse.model_validate(r)
+            if r.device:
+                item.device_uuid = r.device.device_uuid
+                item.device_name = r.device.name
+                item.region = r.device.region
+            items.append(item)
+        return Page[SensorReadingWithDeviceResponse](
+            items=items, total=total, page=page, page_size=page_size, total_pages=total_pages,
         )
 
 
