@@ -99,12 +99,13 @@ def make_event(db_session):
 
 @pytest.fixture
 def world(make_cluster, make_user, make_device):
-    """Two private clusters + one public; a USER in c1, a SUPER_ADMIN."""
+    """Two private clusters + one public; a USER and an ADMIN in c1, a SUPER_ADMIN."""
     c1, c2 = make_cluster(), make_cluster()
     public = make_cluster(public=True)
     return {
         "c1": c1, "c2": c2, "public": public,
         "user": make_user(cluster_id=c1.id),
+        "admin": make_user(role=UserRole.ADMIN, cluster_id=c1.id),
         "super": make_user(role=UserRole.SUPER_ADMIN),
         "d1": make_device(c1), "d2": make_device(c2), "dpub": make_device(public),
     }
@@ -214,6 +215,60 @@ class TestScoping:
         raw, _ = make_api_key(world["user"])
         ids = {c["id"] for c in client.get("/api/v1/clusters", headers=auth(raw)).json()["items"]}
         assert ids == {world["c1"].id, world["public"].id}
+
+    # An ADMIN's key follows the exact same visible_cluster_ids() rule as a
+    # USER's — own cluster ∪ public — never their whole-fleet management
+    # reach. This is the case the "cluster admin only sees his cluster's
+    # data" requirement is actually about.
+    def test_admin_key_sees_own_and_public_only(
+        self, client, world, make_api_key, make_reading, make_event
+    ):
+        make_reading(world["d1"])
+        make_reading(world["d2"])  # a different admin's cluster — must never leak
+        make_event(world["d1"], species="mine")
+        make_event(world["d2"], species="not-mine")
+        raw, _ = make_api_key(world["admin"])
+
+        device_uuids = {
+            d["device_uuid"] for d in client.get("/api/v1/devices", headers=auth(raw)).json()["items"]
+        }
+        assert device_uuids == {world["d1"].device_uuid, world["dpub"].device_uuid}
+
+        readings = client.get("/api/v1/sensor-readings", headers=auth(raw)).json()["items"]
+        assert {r["device_uuid"] for r in readings} == {world["d1"].device_uuid}
+
+        events = client.get("/api/v1/mosquito-events", headers=auth(raw)).json()["items"]
+        assert {e["species"] for e in events} == {"mine"}
+
+        cluster_ids = {c["id"] for c in client.get("/api/v1/clusters", headers=auth(raw)).json()["items"]}
+        assert cluster_ids == {world["c1"].id, world["public"].id}
+
+    def test_admin_key_cannot_reach_another_clusters_data_via_filter(
+        self, client, world, make_api_key
+    ):
+        # Explicitly asking for another admin's cluster must still yield
+        # nothing — an admin's key is not a backdoor around the intersection.
+        raw, _ = make_api_key(world["admin"])
+        res = client.get(f"/api/v1/devices?cluster_id={world['c2'].id}", headers=auth(raw)).json()
+        assert res["items"] == [] and res["total"] == 0
+
+    def test_admin_role_change_narrows_key_scope_next_request(
+        self, client, world, make_api_key, db_session
+    ):
+        # The design contract: a key's scope is resolved fresh every request
+        # from the OWNER's current role/cluster, never cached on the key
+        # itself. If an admin is demoted or reassigned, their key must
+        # reflect that on the very next call, not after re-issuing it.
+        raw, _ = make_api_key(world["admin"])
+        before = {d["device_uuid"] for d in client.get("/api/v1/devices", headers=auth(raw)).json()["items"]}
+        assert world["d1"].device_uuid in before
+
+        world["admin"].cluster_id = world["c2"].id
+        db_session.commit()
+
+        after = {d["device_uuid"] for d in client.get("/api/v1/devices", headers=auth(raw)).json()["items"]}
+        assert world["d1"].device_uuid not in after
+        assert world["d2"].device_uuid in after
 
 
 # ── Filtering / sorting / pagination / fields ────────────────────────────────
