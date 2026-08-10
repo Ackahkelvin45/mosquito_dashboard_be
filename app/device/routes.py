@@ -190,6 +190,7 @@ def get_all_sensor_readings(
     search: Optional[str] = Query(default=None, description="Matches device name, UUID or region"),
     region: Optional[List[str]] = Query(default=None, description="Repeatable: matches any of the given regions"),
     device_uuid: Optional[List[str]] = Query(default=None),
+    cluster_id: Optional[List[int]] = Query(default=None, description="Repeatable: matches any of the given clusters (super admin only — intersected with your own scope otherwise)"),
     current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     """Fleet-wide sensor readings for the Sensor Data page, newest first."""
@@ -198,7 +199,7 @@ def get_all_sensor_readings(
         return DeviceService(session).get_all_sensor_readings(
             page=page, page_size=page_size,
             start_date=start_date, end_date=end_date, search=search,
-            region=region, device_uuids=device_uuid,
+            region=region, device_uuids=device_uuid, cluster_id=cluster_id,
             allowed_cluster_ids=allowed,
         )
     except Exception as e:

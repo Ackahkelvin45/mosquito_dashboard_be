@@ -159,12 +159,13 @@ class DeviceService:
         search: str | None = None,
         region: List[str] | None = None,
         device_uuids: List[str] | None = None,
+        cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
     ) -> Page[SensorReadingWithDeviceResponse]:
         rows, total = self.device_repository.get_sensor_readings_page(
             page=page, page_size=page_size,
             start_date=start_date, end_date=end_date, search=search,
-            region=region, device_uuids=device_uuids,
+            region=region, device_uuids=device_uuids, cluster_id=cluster_id,
             allowed_cluster_ids=allowed_cluster_ids,
         )
         total_pages = (total + page_size - 1) // page_size if page_size else 0
@@ -232,6 +233,7 @@ class DeviceService:
         device_uuids: List[str] | None = None,
         genus: str | List[str] | None = None,
         species: str | List[str] | None = None,
+        cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
     ) -> Page[MosquitoEventResponse]:
         events = self.device_repository.get_all_mosquito_events(
@@ -242,6 +244,7 @@ class DeviceService:
             device_uuids=device_uuids,
             genus=genus,
             species=species,
+            cluster_id=cluster_id,
             allowed_cluster_ids=allowed_cluster_ids,
         )
         sliced, total, total_pages = paginate(events, page, page_size)

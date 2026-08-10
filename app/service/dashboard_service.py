@@ -2,7 +2,7 @@ import math
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import List, Optional
 
 from app.device.models import Device, MosquitoEvent, SensorDeviceReading, MosquitoIndividualReading
 from app.device.schema import ACTIVE_WINDOW_HOURS
@@ -84,7 +84,7 @@ class DashboardService:
         correlation_group_by: str = "month",
         genus_heatmap_group_by: str = "month",
         region: Optional[str] = None,
-        cluster_id: Optional[int] = None,
+        cluster_id: Optional[List[int]] = None,
         device_id: Optional[int] = None,
         allowed_cluster_ids: Optional[set[int]] = None,
         start_date: Optional[datetime] = None,
@@ -116,8 +116,8 @@ class DashboardService:
         device_q = self.session.query(Device)
         if region:
             device_q = device_q.filter(Device.region.ilike(f"%{region}%"))
-        if cluster_id is not None:
-            device_q = device_q.filter(Device.cluster_id == cluster_id)
+        if cluster_id:
+            device_q = device_q.filter(Device.cluster_id.in_(cluster_id))
         if device_id is not None:
             device_q = device_q.filter(Device.id == device_id)
         # Cluster scope from the caller's role. None => unrestricted (super admin).
@@ -134,7 +134,7 @@ class DashboardService:
         # silent fallback to the whole fleet). A cluster-restricted caller is
         # ALWAYS scoped, so their device_ids drive the charts too. Only an
         # unrestricted caller with no explicit filter gets None (query all).
-        has_device_filter = bool(region) or cluster_id is not None or device_id is not None
+        has_device_filter = bool(region) or bool(cluster_id) or device_id is not None
         is_restricted = allowed_cluster_ids is not None
         scoped_ids: Optional[list[int]] = (
             device_ids if (has_device_filter or is_restricted) else None

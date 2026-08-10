@@ -15,7 +15,7 @@ from fastapi import FastAPI
 
 from app.core.database import get_db
 from app.authentication.enums import UserRole
-from app.device.models import MosquitoEvent, MosquitoIndividualReading
+from app.device.models import MosquitoEvent, MosquitoIndividualReading, SensorDeviceReading
 
 
 @pytest.fixture
@@ -244,3 +244,62 @@ class TestAuthenticatedAccessUnchanged:
         login_as(make_user(role=UserRole.SUPER_ADMIN))
         ids = {d["id"] for d in client.get("/devices").json()["items"]}
         assert ids == {world["public_device"].id, world["private_device"].id}
+
+
+class TestClusterFilterCannotEscapeScope:
+    """The cluster_id filter on sensor-readings/mosquito-events (the new
+    super-admin-only cluster picker on Sensor Data / Historical Data) must
+    only ever narrow a scoped caller's own visibility, never let them reach
+    another cluster's data just by asking for its id — same guarantee the
+    dashboard and API keys already have."""
+
+    def test_sensor_readings_cluster_filter_cannot_reach_other_cluster(
+        self, client, login_as, make_user, make_cluster, make_device, db_session
+    ):
+        own_cluster, other_cluster = make_cluster(), make_cluster()
+        own_device, other_device = make_device(own_cluster), make_device(other_cluster)
+        db_session.add(SensorDeviceReading(device_id=own_device.id, timestamp=datetime.utcnow()))
+        db_session.add(SensorDeviceReading(device_id=other_device.id, timestamp=datetime.utcnow()))
+        db_session.commit()
+
+        login_as(make_user(role=UserRole.ADMIN, cluster_id=own_cluster.id))
+
+        res = client.get(f"/devices/sensor-readings?cluster_id={other_cluster.id}").json()
+        assert res["items"] == [] and res["total"] == 0
+
+        res = client.get(f"/devices/sensor-readings?cluster_id={own_cluster.id}").json()
+        assert res["total"] == 1
+
+    def test_mosquito_events_cluster_filter_cannot_reach_other_cluster(
+        self, client, login_as, make_user, make_cluster, make_device, make_event
+    ):
+        own_cluster, other_cluster = make_cluster(), make_cluster()
+        own_device, other_device = make_device(own_cluster), make_device(other_cluster)
+        make_event(own_device, species="mine")
+        make_event(other_device, species="not-mine")
+
+        login_as(make_user(role=UserRole.ADMIN, cluster_id=own_cluster.id))
+
+        res = client.get(f"/mosquito?cluster_id={other_cluster.id}").json()
+        assert res["items"] == [] and res["total"] == 0
+
+        res = client.get(f"/mosquito?cluster_id={own_cluster.id}").json()
+        assert res["total"] == 1
+        assert res["items"][0]["mosquito_reading"]["species"] == "mine"
+
+    def test_super_admin_cluster_filter_narrows_to_requested_cluster(
+        self, client, login_as, make_user, make_cluster, make_device, db_session
+    ):
+        c1, c2 = make_cluster(), make_cluster()
+        d1, d2 = make_device(c1), make_device(c2)
+        db_session.add(SensorDeviceReading(device_id=d1.id, timestamp=datetime.utcnow()))
+        db_session.add(SensorDeviceReading(device_id=d2.id, timestamp=datetime.utcnow()))
+        db_session.commit()
+
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+
+        res = client.get(f"/devices/sensor-readings?cluster_id={c1.id}").json()
+        assert res["total"] == 1
+        # No filter at all -> a super admin still sees the whole fleet ("All").
+        res = client.get("/devices/sensor-readings").json()
+        assert res["total"] == 2

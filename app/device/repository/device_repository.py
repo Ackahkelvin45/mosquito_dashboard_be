@@ -307,6 +307,7 @@ class DeviceRepository(BaseRepository[Device]):
         device_uuids: List[str] | None = None,
         genus: str | List[str] | None = None,
         species: str | List[str] | None = None,
+        cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
     ):
         if start_date is not None:
@@ -319,7 +320,11 @@ class DeviceRepository(BaseRepository[Device]):
             query = query.filter(MosquitoEvent.timestamp <= end_date)
 
         # Cluster scope (requires Device to be joined — callers force the join
-        # when allowed_cluster_ids is set).
+        # when cluster_id/allowed_cluster_ids is set). Two separate `IN`
+        # filters on the same column intersect, so an explicit cluster_id
+        # request can only narrow allowed_cluster_ids, never escape it.
+        if cluster_id:
+            query = query.filter(Device.cluster_id.in_(cluster_id))
         if allowed_cluster_ids is not None:
             query = query.filter(Device.cluster_id.in_(allowed_cluster_ids))
 
@@ -418,6 +423,7 @@ class DeviceRepository(BaseRepository[Device]):
         search: str | None = None,
         region: List[str] | None = None,
         device_uuids: List[str] | None = None,
+        cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
     ) -> tuple[List[SensorDeviceReading], int]:
         """Fleet-wide sensor readings, newest first.
@@ -444,6 +450,11 @@ class DeviceRepository(BaseRepository[Device]):
             q = q.filter(Device.region.in_(region))
         if device_uuids:
             q = q.filter(Device.device_uuid.in_(device_uuids))
+        if cluster_id:
+            q = q.filter(Device.cluster_id.in_(cluster_id))
+        # Two separate `IN` filters on the same column intersect: a row must
+        # satisfy both, so an explicit cluster_id request can only narrow the
+        # caller's own scope, never escape it (same pattern as dashboard/API-key scoping).
         if allowed_cluster_ids is not None:
             q = q.filter(Device.cluster_id.in_(allowed_cluster_ids))
 
@@ -466,10 +477,14 @@ class DeviceRepository(BaseRepository[Device]):
         device_uuids: List[str] | None = None,
         genus: str | List[str] | None = None,
         species: str | List[str] | None = None,
+        cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
     ) -> List[MosquitoEvent]:
         # Cluster scope needs the Device join, so force the join path when set.
-        needs_join = bool(search or region or device_uuids or genus or species) or allowed_cluster_ids is not None
+        needs_join = (
+            bool(search or region or device_uuids or genus or species or cluster_id)
+            or allowed_cluster_ids is not None
+        )
 
         if not needs_join:
             base_query = self.session.query(MosquitoEvent)
@@ -503,6 +518,7 @@ class DeviceRepository(BaseRepository[Device]):
             device_uuids=device_uuids,
             genus=genus,
             species=species,
+            cluster_id=cluster_id,
             allowed_cluster_ids=allowed_cluster_ids,
         )
         ids_subq = (

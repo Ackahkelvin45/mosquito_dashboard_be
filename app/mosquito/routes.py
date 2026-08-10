@@ -49,6 +49,7 @@ def get_all_mosquito_events(
     device_uuid: Optional[List[str]] = Query(default=None),
     genus: Optional[List[str]] = Query(default=None, description="Repeatable: matches any of the given genus values"),
     species: Optional[List[str]] = Query(default=None, description="Repeatable: matches any of the given species values"),
+    cluster_id: Optional[List[int]] = Query(default=None, description="Repeatable: matches any of the given clusters (super admin only — intersected with your own scope otherwise)"),
     current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
     try:
@@ -67,6 +68,7 @@ def get_all_mosquito_events(
             device_uuids=device_uuid,
             genus=genus,
             species=species,
+            cluster_id=cluster_id,
             allowed_cluster_ids=allowed,
         )
     except Exception as e:

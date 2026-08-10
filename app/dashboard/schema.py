@@ -208,5 +208,5 @@ class DashboardResponse(BaseModel):
     genus_heatmap: DashboardGenusHeatmap
     # Device filters echoed back
     region: Optional[str] = Field(None, description="Region filter applied")
-    cluster_id: Optional[int] = Field(None, description="Cluster filter applied")
+    cluster_id: Optional[List[int]] = Field(None, description="Cluster filter applied")
     device_id: Optional[int] = Field(None, description="Device filter applied")

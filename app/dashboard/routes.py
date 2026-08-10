@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPBearer
 from fastapi import status
 from sqlalchemy.orm import Session
-from typing import Optional, Literal
+from typing import List, Optional, Literal
 from datetime import datetime
 
 from app.core.database import get_db
@@ -104,9 +104,9 @@ def get_dashboard(
         default=None,
         description="Filter devices by region (case-insensitive partial match).",
     ),
-    cluster_id: Optional[int] = Query(
+    cluster_id: Optional[List[int]] = Query(
         default=None,
-        description="Filter devices belonging to this cluster.",
+        description="Repeatable: filter devices belonging to any of the given clusters.",
     ),
     device_id: Optional[int] = Query(
         default=None,
