@@ -27,7 +27,6 @@ router = APIRouter(
 def login(login_details: UserLogin,session: Session=Depends(get_db)):
     try:
         user_service = UserService(session)
-        print(f"Login details: {login_details}")
         return user_service.login_user(login_details)
     except Exception as e:
         raise e
