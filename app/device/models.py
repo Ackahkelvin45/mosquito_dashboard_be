@@ -1,5 +1,5 @@
 from app.core.database import Base
-from sqlalchemy import Enum, Integer, String, DateTime, Boolean, Float, ForeignKey, Table, Column, select, and_
+from sqlalchemy import Enum, Integer, String, DateTime, Boolean, Float, JSON, ForeignKey, Table, Column, select, and_
 from sqlalchemy.orm import relationship, mapped_column, Mapped
 from datetime import datetime
 from app.authentication.enums import DeviceStatus
@@ -27,7 +27,14 @@ class DeviceCluster(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
     devices: Mapped[list["Device"]] = relationship("Device", back_populates="cluster")
-    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.PENDING)
+    # values_callable: Status's member names are uppercase but its values are
+    # lowercase ("PENDING" = 'pending'), and the Postgres enum type "status"
+    # only accepts the lowercase values — SQLAlchemy defaults to writing the
+    # member NAME, which would insert "PENDING" and fail exactly like this.
+    status: Mapped[Status] = mapped_column(
+        Enum(Status, values_callable=lambda enum_cls: [e.value for e in enum_cls]),
+        default=Status.PENDING,
+    )
     researcher_request: Mapped["ResearcherRequest | None"] = relationship(
         "ResearcherRequest",
         back_populates="cluster",
@@ -134,10 +141,20 @@ class SensorDeviceReading(Base):
     external_pressure: Mapped[float | None] = mapped_column(Float, nullable=True)
     external_light: Mapped[float | None] = mapped_column(Float, nullable=True)
     battery_voltage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 0-100, already normalised for the device's configured battery profile
+    # (1-cell/2-cell/3-cell all read very different raw voltages) — see
+    # battery_voltage's docstring note above.
+    battery_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
     trap_status: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Whether the Gateway currently has a live link to the Listener Unit.
+    # Nullable: older firmware/readings never reported it.
+    esp1_link_alive: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # True when this arrived on the "_test"-suffixed topic (device in Test
+    # mode) — excluded from notifications/trap-flip state, see mqtt_client.py.
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     device: Mapped["Device"] = relationship("Device", back_populates="device_reading")
 
-    
+
     def __repr__(self):
         return f"SensorDeviceReading(id={self.id}, device_id={self.device_id}, timestamp={self.timestamp}, external_temperature={self.external_temperature}, internal_temperature={self.internal_temperature}, external_humidity={self.external_humidity}, internal_humidity={self.internal_humidity}, internal_pressure={self.internal_pressure}, external_light={self.external_light}, battery_voltage={self.battery_voltage}, trap_status={self.trap_status})"
 
@@ -152,6 +169,9 @@ class MosquitoEvent(Base):
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"))
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     count: Mapped[int] = mapped_column(Integer, default=0)
+    # True when this arrived on the "_test"-suffixed topic (device in Test
+    # mode) — excluded from device.total_mosquito_count and notifications.
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     device: Mapped["Device"] = relationship("Device", back_populates="mosquito_readings")
     mosquito_reading: Mapped["MosquitoIndividualReading | None"] = relationship(
         "MosquitoIndividualReading",
@@ -175,6 +195,14 @@ class MosquitoIndividualReading(Base):
     genus: Mapped[str] = mapped_column(String(250), nullable=True)
     age_group: Mapped[str] = mapped_column(String(50))
     sex: Mapped[str] = mapped_column(String(50))
+    # Real model confidence (0.0-1.0) that this event was a mosquito at all.
+    p_mosq: Mapped[float | None] = mapped_column(Float, nullable=True)
+    binary_decision: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Per-genus / per-sex confidence: exactly one key holds the real value,
+    # the rest are 0 — NOT a softmax distribution. See schema notes.
+    taxon_probs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    sex_probs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    inference_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     batch: Mapped["MosquitoEvent"] = relationship("MosquitoEvent", back_populates="mosquito_reading")
 
     def __repr__(self):

@@ -24,13 +24,19 @@ class DeviceRepository(BaseRepository[Device]):
     def create_device(self, device_data: DeviceCreate) -> Device:
         data = device_data.model_dump(exclude_none=True)
 
-        cluster = (
-            self.session.query(DeviceCluster)
-            .filter(DeviceCluster.id == device_data.cluster_id)
-            .first()
-        )
-        if not cluster:
-            raise HTTPException(status_code=404, detail=f"Cluster with id {device_data.cluster_id} not found")
+        # cluster_id is optional (schema and column both allow None) — only
+        # validate it when one was actually supplied. Looking it up
+        # unconditionally made an unassigned device impossible to register,
+        # failing with a misleading "Cluster with id None not found" and
+        # blocking the exact recovery path an UNKNOWN_DEVICE alert asks for.
+        if device_data.cluster_id is not None:
+            cluster = (
+                self.session.query(DeviceCluster)
+                .filter(DeviceCluster.id == device_data.cluster_id)
+                .first()
+            )
+            if not cluster:
+                raise HTTPException(status_code=404, detail=f"Cluster with id {device_data.cluster_id} not found")
         new_device = Device(**data)
         self.session.add(new_device)
         self.session.commit()
@@ -236,7 +242,9 @@ class DeviceRepository(BaseRepository[Device]):
                 external_pressure=payload.pressure_external,
                 external_light=payload.external_light,
                 battery_voltage=payload.battery,
+                battery_pct=payload.battery_pct,
                 trap_status=payload.trap_status,
+                esp1_link_alive=payload.esp1_link_alive,
             )
             # Heartbeat uses server receive time, never the device-supplied
             # timestamp: a skewed clock or an SD-queue backfill of old readings
@@ -267,6 +275,11 @@ class DeviceRepository(BaseRepository[Device]):
             genus=reading_payload.genus,
             age_group=reading_payload.age_group,
             sex=reading_payload.sex,
+            p_mosq=reading_payload.p_mosq,
+            binary_decision=reading_payload.binary_decision,
+            taxon_probs=reading_payload.taxon_probs,
+            sex_probs=reading_payload.sex_probs,
+            inference_ms=reading_payload.inference_ms,
         )
         event = MosquitoEvent(
             device_id=device.id,

@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 import os
 import uuid
 from app.authentication.schema import UserResponse
+from utils.trap_status import parse_trap_status
 
 
 # Staleness window for the STATUS CHARTS only (sampling trap state over time).
@@ -108,13 +109,25 @@ class SensorDataPayload(BaseModel):
     pressure_external: float
     external_light: float = 0.0
     battery: float
+    # battery_pct: 0-100, already normalised for the device's configured
+    # battery profile — see MQTT_Schema_Reference.pdf.
+    battery_pct: Optional[int] = Field(None, ge=0, le=100)
+    # Real device firmware sends the string "ON"/"OFF"; a plain bool is also
+    # accepted for REST callers/back-compat.
     trap_status: Optional[bool] = False
+    esp1_link_alive: Optional[bool] = Field(
+        None, description="Whether the Gateway currently has a live link to the Listener Unit"
+    )
     # Optional GPS fix. When present it updates the device's stored position and
     # triggers reverse geocoding of region/community. Accepts decimal degrees or
     # scaled integers (e.g. microdegrees) — see utils.coordinates.
     latitude: Optional[float] = Field(None, description="Device latitude at the time of the reading")
     longitude: Optional[float] = Field(None, description="Device longitude at the time of the reading")
 
+    @field_validator("trap_status", mode="before")
+    @classmethod
+    def _coerce_trap_status(cls, v):
+        return parse_trap_status(v, default=False)
 
 
 class SensorDataResponse(BaseModel):
@@ -129,7 +142,9 @@ class SensorDataResponse(BaseModel):
     external_pressure: Optional[float] = Field(None, alias="external_pressure")
     external_light: Optional[float] = Field(None)
     battery: Optional[float] = Field(None, alias="battery_voltage")
+    battery_pct: Optional[int] = None
     trap_status: Optional[bool] = False
+    esp1_link_alive: Optional[bool] = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -202,6 +217,13 @@ class MosquitoIndividualPayload(BaseModel):
     genus: Optional[str] = None
     age_group: Optional[str] = None
     sex: Optional[str] = None
+    p_mosq: Optional[float] = Field(None, ge=0.0, le=1.0)
+    binary_decision: Optional[bool] = None
+    # Per-genus/per-sex confidence — exactly one key holds the real value,
+    # the rest are 0 (not a softmax distribution). See schema notes.
+    taxon_probs: Optional[dict] = None
+    sex_probs: Optional[dict] = None
+    inference_ms: Optional[int] = None
 
 
 

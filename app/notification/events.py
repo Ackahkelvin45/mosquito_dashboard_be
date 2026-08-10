@@ -17,7 +17,9 @@ are tolerated and ignored):
 
     SPECIES_DETECTED             device, species?, genus?, sex?, age_group?
     ACTIVITY_SURGE               device, count? (computed from MosquitoEvent when omitted)
-    LOW_BATTERY                  device, voltage
+    LOW_BATTERY                  device, voltage?, pct?  (pct is battery-profile-
+                                  aware and preferred; voltage is a flat-threshold
+                                  fallback for when pct is missing)
     TRAP_TRIGGERED               device            (caller detects the false→true flip)
     EXTREME_TEMPERATURE          device, temperature
     EXTREME_HUMIDITY             device, humidity
@@ -76,6 +78,12 @@ NOTIFY_ENABLED = _env_bool("NOTIFY_ENABLED", "1")
 NOTIFY_BATTERY_CRITICAL_V = float(os.getenv("NOTIFY_BATTERY_CRITICAL_V", "3.3"))
 # Below this the LOW_BATTERY escalates from WARNING to CRITICAL.
 BATTERY_URGENT_V = 3.0
+# battery_pct is already normalised 0-100 for whatever battery profile is
+# configured on the device (1-cell/2-cell/3-cell read very different raw
+# voltages — see MQTT_Schema_Reference.pdf) — prefer these thresholds over
+# the flat voltage ones above whenever a reading has a pct.
+NOTIFY_BATTERY_CRITICAL_PCT = int(os.getenv("NOTIFY_BATTERY_CRITICAL_PCT", "20"))
+BATTERY_URGENT_PCT = 10
 NOTIFY_SURGE_THRESHOLD = int(os.getenv("NOTIFY_SURGE_THRESHOLD", "20"))
 NOTIFY_SURGE_WINDOW_MIN = int(os.getenv("NOTIFY_SURGE_WINDOW_MIN", "60"))
 NOTIFY_TEMP_MIN = float(os.getenv("NOTIFY_TEMP_MIN", "5"))
@@ -244,23 +252,33 @@ def _activity_surge(service, *, device, count=None, **_):
     )
 
 
-def _low_battery(service, *, device, voltage, **_):
-    if voltage is None or voltage >= NOTIFY_BATTERY_CRITICAL_V:
+def _low_battery(service, *, device, voltage=None, pct=None, **_):
+    if pct is not None:
+        if pct >= NOTIFY_BATTERY_CRITICAL_PCT:
+            return
+        critical = pct < BATTERY_URGENT_PCT
+        level = f"{pct}%"
+    elif voltage is not None:
+        if voltage >= NOTIFY_BATTERY_CRITICAL_V:
+            return
+        critical = voltage < BATTERY_URGENT_V
+        level = f"{voltage:.2f}V"
+    else:
         return
-    critical = voltage < BATTERY_URGENT_V
+
+    voltage_suffix = f" ({voltage:.2f}V)" if voltage is not None and pct is not None else ""
     service.notify_cluster(
         device.cluster_id,
-        title=f"Low battery on {device.name} ({voltage:.2f}V)",
+        title=f"Low battery on {device.name} ({level})",
         body=(
-            f"Battery voltage on {device.name} dropped to {voltage:.2f}V "
-            f"(alert threshold {NOTIFY_BATTERY_CRITICAL_V}V). "
+            f"Battery on {device.name} dropped to {level}{voltage_suffix}. "
             + ("The device may shut down imminently — replace the battery now."
                if critical else "Plan a battery replacement soon.")
         ),
         notification_type=NotificationType.LOW_BATTERY,
         severity=NotificationSeverity.CRITICAL if critical else NotificationSeverity.WARNING,
         category=NotificationCategory.SENSOR,
-        payload={"voltage": voltage, "device_uuid": device.device_uuid},
+        payload={"voltage": voltage, "battery_pct": pct, "device_uuid": device.device_uuid},
         icon="battery-low",
         action_url=f"/devices/{device.id}",
         device_id=device.id,
