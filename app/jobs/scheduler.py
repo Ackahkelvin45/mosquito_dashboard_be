@@ -141,9 +141,10 @@ def register_all_jobs() -> None:
     if scheduler.jobs:
         return
     # Imported lazily so this module stays stdlib-only (importable standalone).
-    from app.jobs.cleanup import run_notification_cleanup
+    from app.jobs.cleanup import run_monitoring_cleanup, run_notification_cleanup
     from app.jobs.health import run_health_sweep
     from app.jobs.offline_detection import run_offline_detection
+    from app.jobs.pipeline_watchdog import run_pipeline_watchdog
     from app.jobs.push_retry import run_push_retry
     from app.jobs.summaries import run_daily_summary, run_weekly_summary
 
@@ -167,4 +168,12 @@ def register_all_jobs() -> None:
     scheduler.register(Job(
         "device-health", run_health_sweep,
         interval_seconds=float(os.getenv("NOTIFY_HEALTH_CHECK_SEC", "86400")),
+    ))
+    scheduler.register(Job(
+        "pipeline-watchdog", run_pipeline_watchdog,
+        interval_seconds=float(os.getenv("MONITOR_WATCHDOG_SEC", "300")),
+    ))
+    scheduler.register(Job(
+        "monitoring-cleanup", run_monitoring_cleanup,
+        interval_seconds=float(os.getenv("NOTIFY_CLEANUP_SEC", "3600")),
     ))

@@ -23,8 +23,8 @@ Dedupe windows are minutes; "—" = no window (fires every time, or guarded else
 | `SENSOR_MALFUNCTION` | `app/core/mqtt_client.py` (all sensor fields null) **and** `app/jobs/health.py` (last 5 readings identical) | see sources | cluster | WARNING | 180 per device | `alert-triangle` | `/devices/{id}` |
 | `UNKNOWN_DEVICE` | `app/core/mqtt_client.py` (`on_message`) | MQTT data for a UUID with no registered device (data is dropped) | admins | WARNING | 60 per uuid | `alert-triangle` | `/devices` |
 | `INVALID_PAYLOAD` | `app/core/mqtt_client.py` (`on_message`) | JSON/unicode decode failure, or topic with < 3 segments | admins | WARNING | 60 per topic | `alert-triangle` | `/devices` |
-| `DEVICE_OFFLINE` | `app/jobs/offline_detection.py` | `last_activity` older than `NOTIFY_OFFLINE_AFTER_MIN` (5) and `offline_since IS NULL` | cluster | CRITICAL | — (state machine via `devices.offline_since`) | `wifi-off` | `/devices/{id}` |
-| `DEVICE_ONLINE` | `app/jobs/offline_detection.py` | `offline_since` set and `last_activity` recent again | cluster | SUCCESS | — (state machine) | `wifi` | `/devices/{id}` |
+| `DEVICE_OFFLINE` | `app/jobs/offline_detection.py` | `last_sensor_data_at` older than `NOTIFY_OFFLINE_AFTER_MIN` (10) and `offline_since IS NULL` (devices that never sent sensor_data are skipped) | cluster | CRITICAL | — (state machine via `devices.offline_since`) | `wifi-off` | `/devices/{id}` |
+| `DEVICE_ONLINE` | `app/jobs/offline_detection.py` | `offline_since` set and `last_sensor_data_at` recent again | cluster | SUCCESS | — (state machine) | `wifi` | `/devices/{id}` |
 | `DEVICE_LOCATION_CHANGED` | `app/service/device_location_service.py` (`apply_reported_position`) | device with a **known previous position** moves ≥ `DEVICE_MIN_MOVE_METRES` (50 m); first-ever fix is not a move | cluster | WARNING | 720 per device | `map-pin` | `/map/sensor/{id}` |
 | `DEVICE_REASSIGNED` | `app/service/device_service.py` (`update_device`) | `cluster_id` changed by an update | cluster (new cluster) | INFO | — | `boxes` | `/devices/{id}` |
 | `USER_REGISTERED` | `app/service/user_service.py` (`create_user`) | signup | admins | INFO | — | `user-plus` | `/users` |
@@ -141,14 +141,14 @@ sequenceDiagram
 
     loop every NOTIFY_OFFLINE_CHECK_SEC (120 s)
         Sch->>J: run in asyncio.to_thread
-        J->>DB: devices WHERE last_activity < now-30min AND offline_since IS NULL
+        J->>DB: devices WHERE last_sensor_data_at < now-10min AND offline_since IS NULL
         alt newly offline
             J->>DB: set offline_since = now, COMMIT (state first!)
             J->>E: emit(DEVICE_OFFLINE, device)
             E->>S: notify_cluster(... CRITICAL, no dedupe window)
             Note over J,E: state committed before emitting →<br/>exactly one OFFLINE per outage even if emit hiccups
         end
-        J->>DB: devices WHERE offline_since IS NOT NULL AND last_activity recent
+        J->>DB: devices WHERE offline_since IS NOT NULL AND last_sensor_data_at recent
         alt recovered
             J->>DB: clear offline_since, COMMIT
             J->>E: emit(DEVICE_ONLINE, device, offline_duration_min)

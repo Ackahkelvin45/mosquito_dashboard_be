@@ -34,8 +34,10 @@ class NotificationResponse(BaseModel):
 
 
 class NotificationPreferenceResponse(BaseModel):
-    """The caller's notification toggles."""
-    species_alerts: bool = Field(..., description="Receive species detection and activity surge alerts")
+    """The caller's notification toggles and personal thresholds."""
+    species_alerts: bool = Field(..., description="Receive species detection alerts")
+    surge_alerts: bool = Field(..., description="Receive activity surge alerts")
+    environment_alerts: bool = Field(..., description="Receive extreme temperature/humidity alerts")
     battery_alerts: bool = Field(..., description="Receive low battery alerts")
     offline_alerts: bool = Field(..., description="Receive device offline/online alerts")
     admin_alerts: bool = Field(..., description="Receive admin alerts (registrations, unknown devices, bad payloads)")
@@ -43,13 +45,22 @@ class NotificationPreferenceResponse(BaseModel):
     email_enabled: bool = Field(..., description="Allow email delivery (summaries and critical alerts)")
     push_enabled: bool = Field(..., description="Allow browser push delivery")
     in_app_enabled: bool = Field(..., description="Allow in-app notifications (master switch for creation)")
+    # Personal thresholds — null means "use the system setting". Filter-only:
+    # a personal value may only be stricter (more permissive gate) than global.
+    personal_temp_max: Optional[float] = Field(None, description="Only alert me above this °C (null = system setting)")
+    personal_humidity_max: Optional[float] = Field(None, description="Only alert me above this %RH (null = system setting)")
+    personal_battery_min_v: Optional[float] = Field(None, description="Only alert me below this voltage (null = system setting)")
+    personal_surge_threshold: Optional[int] = Field(None, description="Only alert me above this detection count (null = system setting)")
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class NotificationPreferenceUpdate(BaseModel):
-    """Partial update — only the provided toggles change."""
-    species_alerts: Optional[bool] = Field(None, description="Receive species detection and activity surge alerts")
+    """Partial update — only the provided fields change. An explicit null
+    clears a personal threshold back to the system setting."""
+    species_alerts: Optional[bool] = Field(None, description="Receive species detection alerts")
+    surge_alerts: Optional[bool] = Field(None, description="Receive activity surge alerts")
+    environment_alerts: Optional[bool] = Field(None, description="Receive extreme temperature/humidity alerts")
     battery_alerts: Optional[bool] = Field(None, description="Receive low battery alerts")
     offline_alerts: Optional[bool] = Field(None, description="Receive device offline/online alerts")
     admin_alerts: Optional[bool] = Field(None, description="Receive admin alerts (registrations, unknown devices, bad payloads)")
@@ -57,6 +68,10 @@ class NotificationPreferenceUpdate(BaseModel):
     email_enabled: Optional[bool] = Field(None, description="Allow email delivery (summaries and critical alerts)")
     push_enabled: Optional[bool] = Field(None, description="Allow browser push delivery")
     in_app_enabled: Optional[bool] = Field(None, description="Allow in-app notifications (master switch for creation)")
+    personal_temp_max: Optional[float] = Field(None, ge=-50, le=60)
+    personal_humidity_max: Optional[float] = Field(None, ge=0, le=100)
+    personal_battery_min_v: Optional[float] = Field(None, ge=0.5, le=15)
+    personal_surge_threshold: Optional[int] = Field(None, ge=1, le=100_000)
 
 
 class PushSubscriptionKeys(BaseModel):

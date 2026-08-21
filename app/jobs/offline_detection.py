@@ -1,15 +1,21 @@
 """Offline/online detector — THE owner of the devices.offline_since state
 machine (plan §4: "state-machine via devices.offline_since").
 
+Liveness is judged on last_sensor_data_at — stamped only by the periodic
+sensor_data telemetry — never on last_activity, which any message (including
+sporadic mosquito_data events) refreshes. Devices that have never sent
+sensor_data (last_sensor_data_at IS NULL) are skipped: they show as offline
+in the UI, but DEVICE_OFFLINE for a device that was never online is noise.
+
 Every NOTIFY_OFFLINE_CHECK_SEC (default 120s):
-  - devices whose last_activity is older than NOTIFY_OFFLINE_AFTER_MIN
-    (default 5 min, shared with the is_active badge via
+  - devices whose last_sensor_data_at is older than NOTIFY_OFFLINE_AFTER_MIN
+    (default 10 min, shared with the is_active badge via
     app.device.schema.OFFLINE_AFTER_MIN) and offline_since IS NULL are
     stamped offline_since=now
     and a DEVICE_OFFLINE is emitted — exactly once per outage, no dedupe
     window needed.
-  - devices with offline_since set whose last_activity is recent again are
-    cleared and a DEVICE_ONLINE is emitted.
+  - devices with offline_since set whose last_sensor_data_at is recent again
+    are cleared and a DEVICE_ONLINE is emitted.
 
 State is committed BEFORE emitting so a notification hiccup can never cause
 repeat alerts (emit itself never raises).
@@ -32,7 +38,7 @@ def run_offline_detection() -> None:
 
         newly_offline = (
             session.query(Device)
-            .filter(Device.last_activity < cutoff, Device.offline_since.is_(None))
+            .filter(Device.last_sensor_data_at < cutoff, Device.offline_since.is_(None))
             .all()
         )
         for device in newly_offline:
@@ -40,13 +46,13 @@ def run_offline_detection() -> None:
             session.commit()
             emit(session, NotificationEvent.DEVICE_OFFLINE, device=device)
             logger.info(
-                "Device %s (%s) marked offline (last activity %s)",
-                device.id, device.name, device.last_activity,
+                "Device %s (%s) marked offline (last sensor_data %s)",
+                device.id, device.name, device.last_sensor_data_at,
             )
 
         recovered = (
             session.query(Device)
-            .filter(Device.offline_since.isnot(None), Device.last_activity >= cutoff)
+            .filter(Device.offline_since.isnot(None), Device.last_sensor_data_at >= cutoff)
             .all()
         )
         for device in recovered:

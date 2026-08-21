@@ -109,6 +109,9 @@ GET /devices?region=Accra&trap_status=false   # off devices in Accra
 
 ## 2b. `GET /devices` — new `is_active` field (device liveness)
 
+> **Superseded by §12:** `is_active` is now derived from `last_sensor_data_at`
+> (sensor_data heartbeat only) with a **10-minute** window, not `last_activity`/24h.
+
 Every device response now includes a computed boolean `is_active` indicating whether the
 device is **communicating**, independent of its `trap_status` (on/off).
 
@@ -719,6 +722,225 @@ created the tables.
 - No new FE env var: the VAPID public key always comes from `GET /push/public-key`.
 - Push requires a secure context (HTTPS; `localhost` exempt). The FE Dockerfile already
   ships `public/sw.js`.
+
+---
+
+## 12. Device liveness is now judged on the sensor_data heartbeat (10-minute window)
+
+Per MQTT_Schema_Reference.pdf, `sensor_data` is the only **periodic** message a device
+sends — `mosquito_data` is event-driven and can legitimately be silent for days. Liveness
+(the `is_active` badge and the DEVICE_OFFLINE/DEVICE_ONLINE alerts) is therefore now
+anchored to a dedicated heartbeat column instead of `last_activity`.
+
+### New column + response field
+| Field | Type | Meaning |
+|---|---|---|
+| `last_sensor_data_at` | datetime \| null | When the device last sent `sensor_data` (any mode, incl. Test). `null` = never. Stamped only by the sensor_data MQTT handler. |
+
+`last_activity` is unchanged and still bumped by **any** message — keep using it as the
+"last seen" display value. The public researcher API (`/api/v1/devices`) also exposes
+`last_sensor_data_at` (additive). Both the MQTT handler and the REST ingest endpoint
+(`POST /devices/uuid/{uuid}/sensor-readings`) stamp the heartbeat.
+
+### Behavior changes
+- `is_active` = `last_sensor_data_at` within the last **10 minutes** (was `last_activity`).
+  The firmware's publish interval is operator-configurable; 10 min is the agreed
+  threshold. Override with `NOTIFY_OFFLINE_AFTER_MIN` (default now `10`, was `5`).
+- The offline-detection job uses the same column and threshold, so the badge and the
+  alerts can never disagree. A burst of `mosquito_data` no longer keeps a device "online"
+  when its telemetry loop is dead — that's exactly the failure this change makes visible.
+- Devices that have **never** sent `sensor_data` show `is_active: false` but are skipped
+  by the offline job (no DEVICE_OFFLINE alert for a device that was never online).
+- Test-mode (`_test` topic) sensor_data **does** count toward liveness: a device in Test
+  mode is reachable; liveness and data validity are separate concerns.
+- DEVICE_OFFLINE notification copy now says "stopped reporting sensor data" with the
+  last sensor_data time.
+
+### Database migration
+Nullable `devices.last_sensor_data_at`, backfilled from `last_activity`
+(`alembic/versions/d8e9f0a1b2c3_add_last_sensor_data_at.py`):
+
+```bash
+alembic upgrade head
+```
+
+### Frontend migration
+- Nothing required — `is_active` stays a server-computed boolean.
+- Optional: device detail views can show `last_sensor_data_at` ("last telemetry")
+  alongside `last_activity` ("last seen"); the two diverging is a diagnostic signal
+  (device alive but telemetry loop down).
+
+---
+
+## 13. System Health — MQTT observability dashboard (SUPER_ADMIN only)
+
+A live operations view of the ingest pipeline so nobody has to SSH into the
+server and tail logs: broker connectivity, message traffic, every ingest
+failure, silent devices, and a fleet-silence alarm.
+
+### New endpoints (all require SUPER_ADMIN)
+| Endpoint | Returns |
+|---|---|
+| `GET /monitoring/mqtt/status` | broker state (live, in-memory), last message received, messages/errors in 24h, devices reporting vs total, silent-device list, the offline threshold |
+| `GET /monitoring/mqtt/traffic?hours=24&device_id=` | zero-filled hourly buckets `{bucket_start, sensor_count, mosquito_count, test_count}` |
+| `GET /monitoring/mqtt/devices/{id}/timeline?hours=48` | same buckets for one device (404 if unknown) |
+| `GET /monitoring/mqtt/errors?page=&page_size=&error_type=` | paginated raw error feed (standard `Page` envelope) |
+
+### How the data is collected
+- `on_message` (app/core/mqtt_client.py) now records every outcome:
+  successes increment an **hourly per-device counter** (`mqtt_traffic_hourly`),
+  failures insert **raw rows** (`mqtt_ingest_errors`: `invalid_payload`,
+  `malformed_topic`, `unknown_device`, `handler_error`, `broker_disconnected`).
+  Unlike notifications these are **never deduped** — they exist to answer
+  "how many". Handler crashes are now caught, rolled back, and logged to the
+  feed instead of dying silently.
+- Broker connected/disconnected state is in-memory (single-process app);
+  disconnects are also persisted to the error feed for history.
+- REST ingest (`POST /devices/uuid/{uuid}/sensor-readings`) is *not* counted
+  as MQTT traffic (it isn't MQTT), but rejected/valid handling is unchanged.
+
+### Background jobs
+- **pipeline-watchdog** (every `MONITOR_WATCHDOG_SEC`, default 300s): if
+  every registered device has been silent for `MONITOR_FLEET_SILENCE_MIN`
+  (default 30 min) → `PIPELINE_SILENT` notification (new type) to super
+  admins, deduped to once/hour. Whole-fleet silence = broker/server problem,
+  which the per-device offline job can't distinguish.
+- **monitoring-cleanup** (hourly): prunes traffic older than
+  `MONITOR_TRAFFIC_RETENTION_DAYS` (30) and errors older than
+  `MONITOR_ERROR_RETENTION_DAYS` (7).
+
+### Database migration
+Two new tables (`mqtt_traffic_hourly`, `mqtt_ingest_errors`) and the
+`PIPELINE_SILENT` value added to the `notificationtype` enum:
+
+```bash
+alembic upgrade head
+```
+
+Migration: `alembic/versions/f0a1b2c3d4e5_add_mqtt_monitoring.py`.
+
+### Frontend
+New sidebar entry **System Health** (`/system-health`, SUPER_ADMIN only):
+plain-language status cards (broker, last message, devices reporting, errors),
+a silent-devices banner, stacked hourly traffic chart (sensor / mosquito /
+test, 6h/24h/72h, per-device filter), and a "Problem feed" that explains each
+failure in non-technical language. Status polls every 10s, feeds every 30s.
+
+---
+
+## 14. Unregistered-device detection (closes TODO.md §1)
+
+MQTT data from an unregistered UUID used to be dropped with only a server log
+line. It is still dropped (no auto-registration — an unknown publisher may be
+noise/abuse), but every stray UUID is now tracked as a **sighting** with
+one-click recovery.
+
+### Behaviour
+- The MQTT unknown-device path upserts one row per UUID into
+  `unregistered_device_sightings`: first/last seen, message count, last topic,
+  last payload (≤ 2 KB), and the last **GPS fix** parsed/normalised into
+  `latitude`/`longitude` (same tolerant parsing as registered ingest; a
+  payload without a fix never erases a known one).
+- Registering a device (`POST /devices`) automatically clears the sighting
+  for its UUID.
+- The existing `UNKNOWN_DEVICE` notification keeps firing (deduped hourly);
+  each occurrence also still lands in the System Health error feed (§13).
+
+### New endpoints (SUPER_ADMIN — registration is super-admin-only)
+| Endpoint | Behaviour |
+|---|---|
+| `GET /devices/unregistered?page=&page_size=` | sightings newest-first, standard `Page` envelope |
+| `DELETE /devices/unregistered/{device_uuid}` | dismiss (404 if absent). Reappears if the device keeps publishing — dismissal is "not now", not "never" |
+
+Route note: registered **before** `GET /devices/{device_id}` so the literal
+path is never swallowed by the int parameter.
+
+### Database migration
+`alembic/versions/a3b4c5d6e7f8_add_unregistered_sightings.py`:
+
+```bash
+alembic upgrade head
+```
+
+### Frontend
+- **Dashboard banner** (super admins): "N devices are sending data but aren't
+  registered — their data is being dropped", links to the devices page.
+- **Devices page section**: each sighting with message count, first/last seen,
+  a **Register** button that opens `/devices/add` with `device_uuid` (and
+  lat/long when known) prefilled, and a **Dismiss** button.
+- Polls every 30 s; requests are skipped entirely for non-super-admins.
+
+---
+
+## 15. Spec-gap features: 2FA (FR-4), alert thresholds (FR-18), audit log (FR-27), map filters (FR-13) + security pack
+
+Implemented after a three-agent design review (security / architecture / FE).
+Migration: `alembic/versions/b4c5d6e7f8a9_add_spec_gap_features.py` (`alembic upgrade head`).
+
+### FR-4 — Email-OTP two-factor authentication
+- **Mandatory for ADMIN/SUPER_ADMIN**, opt-in for USER (`users.two_factor_enabled`,
+  toggled ONLY via `POST /auth/me/two-factor` {enabled, current_password} — deliberately
+  not part of `PATCH /users/{id}`).
+- `POST /auth/login` now returns `{two_factor_required, two_factor_token, message}`
+  (no tokens) when 2FA applies. `POST /auth/login/verify-2fa` {two_factor_token, code}
+  exchanges the challenge for the normal token pair; `POST /auth/login/resend-2fa`
+  re-emails a NEW code (60s cooldown). Codes: 6 digits (secrets RNG), bcrypt-hashed,
+  10-min expiry, burned after 5 wrong guesses; the challenge token binds verification
+  to the password-verified login and is stored SHA-256-hashed.
+- **Session versioning**: `users.token_version` is embedded in every JWT (`ver`) and
+  checked on every request and on refresh. Bumped on password reset, role change,
+  deactivation, 2FA enable and the CLI password reset — killing existing sessions
+  immediately. Old tokens without `ver` count as version 0.
+- **Login hardening**: active+approved gate at login (deactivated/pending users are
+  403 even with the right password), dummy-bcrypt timing equalization for unknown
+  emails, IP-keyed rate limits on login/verify/resend, reset-OTP attempt cap (was
+  unlimited-guess), reset-OTP RNG switched to `secrets`.
+- `POST /auth/refresh-token` accepts the token in the JSON body (query param kept for
+  old clients); refresh re-reads the user and rejects inactive/version-mismatched.
+- **RBAC fix**: researcher-request list/approve endpoints were open to ANY
+  authenticated user (self-approval privilege escalation) — now SUPER_ADMIN only.
+- FE: login page gains a code step (resend + back), settings page gains the 2FA card
+  (admins shown locked-on).
+
+### FR-18 — Alert thresholds
+- **Global (Phase A)**: `alert_settings` table read through a 30s-TTL in-process
+  snapshot; env `NOTIFY_*` values remain the defaults. `GET/PUT
+  /notifications/alert-settings` (SUPER_ADMIN) with range + cross-field validation;
+  changes take effect immediately and are audited. Covers temp min/max, humidity
+  min/max, battery critical/urgent (V and %), surge threshold/window. The daily
+  summary's low-battery count uses the same live values.
+- **Personal (Phase B, filter-only)**: nullable `personal_temp_max`,
+  `personal_humidity_max`, `personal_battery_min_v`, `personal_surge_threshold` on
+  notification preferences. A personal value may only be STRICTER than global
+  (422 otherwise) and only ever filters recipients — the emission gate never widens,
+  so one user's setting can never suppress or spam anyone else (dedupe stays global
+  and correct). Explicit `null` clears back to "use global" (the update path
+  previously swallowed nulls — fixed).
+- New preference toggles: `surge_alerts` (split out of `species_alerts`) and
+  `environment_alerts` (extreme temp/humidity, previously un-toggleable).
+- FE: personal thresholds section (draft + explicit save) on the preferences card;
+  SUPER_ADMIN "System Alert Thresholds" card on the notifications page.
+
+### FR-27 — Audit log
+- `audit_logs` table + never-raising self-committing `audit()` helper. Recorded:
+  login success/failure, 2FA events, password reset request/complete (+ CLI resets),
+  user create/update (field diff), device & cluster create/update/delete, mosquito-
+  event deletion, sighting dismissal, API key create/revoke/bulk-revoke, researcher
+  decisions, alert-setting changes. 24-month retention (`AUDIT_RETENTION_DAYS`).
+- `GET /audit-logs` (SUPER_ADMIN; filters: action, actor_email, date range) and
+  `GET /audit-logs/actions`. FE page at `/audit-logs`, nested with System Health
+  under a "System" sidebar group.
+
+### FR-13 — Map filters
+- Markers now show **connectivity** (green=online / red=offline from `is_active`),
+  matching spec FR-11 — previously they showed trap on/off, contradicting the panel.
+  Trap state remains in the side panel; the trap filter is relabeled "Trap Status
+  (on/off)" vs the new "Connectivity (marker color)" filter.
+- New client-side filters: online/offline and environmental ranges (temp/humidity
+  min/max from each device's latest reading). Genus filtering deferred (needs a
+  backend query param + defined time-window semantics).
+- `lib/reading.ts` accessors tolerate both sensor-field spellings — this also fixes
+  the map's Environmental Data tab, which read alias names the wire never emits.
 
 ---
 

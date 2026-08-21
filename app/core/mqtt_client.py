@@ -3,8 +3,10 @@ import logging
 from datetime import datetime
 from fastapi_mqtt import FastMQTT, MQTTConfig
 from app.device.models import Device, SensorDeviceReading, MosquitoEvent, MosquitoIndividualReading
+from app.device.sightings import extract_raw_fix, record_sighting
 from app.core.database import SessionLocal
 from app.core.config import settings
+from app.monitoring import recorder
 from app.notification.events import NotificationEvent, emit
 from app.service.device_location_service import apply_reported_position
 from utils.trap_status import parse_trap_status
@@ -60,21 +62,10 @@ def _parse_timestamp(value) -> datetime:
 def _apply_position_from_payload(db, device: Device, data: dict) -> None:
     """Update the device's position if the payload carried a GPS fix.
 
-    Accepts a few common key spellings so firmware variations don't silently
-    drop the fix, and tolerates a nested {"location": {...}} / {"gps": {...}}.
+    Key-spelling tolerance lives in sightings.extract_raw_fix, shared with the
+    unregistered-device path so both parse coordinates identically.
     """
-    source = data
-    for nested_key in ("location", "gps", "position"):
-        nested = data.get(nested_key)
-        if isinstance(nested, dict):
-            source = nested
-            break
-
-    lat = next((source.get(k) for k in ("latitude", "lat") if source.get(k) is not None), None)
-    lon = next(
-        (source.get(k) for k in ("longitude", "lon", "lng", "long") if source.get(k) is not None),
-        None,
-    )
+    lat, lon = extract_raw_fix(data)
     if lat is None or lon is None:
         return
 
@@ -147,6 +138,10 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
     )
     db.add(reading)
     device.last_activity = datetime.utcnow()
+    # Liveness heartbeat: only sensor_data (periodic by contract) counts.
+    # Test-mode readings count too — a device in Test mode is reachable, and
+    # liveness is a separate concern from data validity.
+    device.last_sensor_data_at = datetime.utcnow()
     db.commit()
     logger.info(
         f"Sensor reading saved for device {device.device_uuid}"
@@ -243,8 +238,11 @@ def handle_mosquito_event(db, device: Device, data: dict, is_test: bool = False)
             detection_timestamp=_parse_timestamp(mosquito_reading.get("detection_timestamp")),
             species=mosquito_reading.get("species"),
             genus=mosquito_reading.get("genus"),
-            age_group=mosquito_reading.get("age_group"),
-            sex=mosquito_reading.get("sex"),
+            # age_group/sex columns are NOT NULL; the schema guarantees the
+            # keys (age_group is always "" today), but a malformed entry must
+            # degrade to "" rather than blow up the whole message's commit.
+            age_group=mosquito_reading.get("age_group") or "",
+            sex=mosquito_reading.get("sex") or "",
             p_mosq=mosquito_reading.get("p_mosq"),
             binary_decision=mosquito_reading.get("binary_decision"),
             taxon_probs=mosquito_reading.get("taxon_probs"),
@@ -275,11 +273,13 @@ def handle_mosquito_event(db, device: Device, data: dict, is_test: bool = False)
 @mqtt.on_connect()
 def on_connect(client, flags, rc, properties):
     logger.info(f"Connected to MQTT broker at {BROKER}:{PORT}")
+    recorder.mark_connected()
 
 
 @mqtt.subscribe(TOPIC_SENSOR_DATA, TOPIC_MOSQUITO_COUNT, TOPIC_SENSOR_DATA_TEST, TOPIC_MOSQUITO_COUNT_TEST)
 async def on_message(client, topic, payload, qos, properties):
     topic_str = topic
+    recorder.mark_message()
 
     try:
         data = json.loads(payload.decode())
@@ -287,6 +287,7 @@ async def on_message(client, topic, payload, qos, properties):
         logger.error(f"Failed to parse message on topic {topic_str}: {e}")
         with SessionLocal() as db:
             emit(db, NotificationEvent.INVALID_PAYLOAD, topic=topic_str, error=str(e))
+            recorder.record_error(db, "invalid_payload", topic=topic_str, detail=str(e))
         return
 
     # Extract device UUID + event type from topic: mosquito_dashboard/<device_uuid>/<event_type>
@@ -295,6 +296,7 @@ async def on_message(client, topic, payload, qos, properties):
         logger.error(f"Malformed topic received: '{topic_str}' — expected format: mosquito_dashboard/<device_uuid>/<event_type>")
         with SessionLocal() as db:
             emit(db, NotificationEvent.INVALID_PAYLOAD, topic=topic_str, error="malformed topic")
+            recorder.record_error(db, "malformed_topic", topic=topic_str)
         return
 
     device_uuid = parts[1]
@@ -313,20 +315,49 @@ async def on_message(client, topic, payload, qos, properties):
                 f"Register the device first before it can publish data."
             )
             emit(db, NotificationEvent.UNKNOWN_DEVICE, device_uuid=device_uuid, topic=topic_str)
+            recorder.record_error(db, "unknown_device", topic=topic_str, device_uuid=device_uuid)
+            # Track the stray UUID so the dashboard can offer one-click
+            # registration instead of silently dropping its data forever.
+            record_sighting(db, device_uuid, topic_str, data)
             return
 
-        if base_event_type == "sensor_data":
-            handle_sensor_data(db, device, data, is_test=is_test)
+        try:
+            if base_event_type == "sensor_data":
+                handle_sensor_data(db, device, data, is_test=is_test)
 
-        elif base_event_type == "mosquito_data":
-            handle_mosquito_event(db, device, data, is_test=is_test)
+            elif base_event_type == "mosquito_data":
+                handle_mosquito_event(db, device, data, is_test=is_test)
 
-        else:
-            logger.warning(f"Unknown topic pattern: '{topic_str}' — no handler matched for device '{device_uuid}'")
+            else:
+                logger.warning(f"Unknown topic pattern: '{topic_str}' — no handler matched for device '{device_uuid}'")
+                return
+        except Exception as e:
+            # A handler bug must not kill the MQTT loop silently — surface it
+            # in the System Health error feed with the session cleaned first.
+            logger.exception(f"Handler failed for topic {topic_str}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            recorder.record_error(db, "handler_error", topic=topic_str,
+                                  device_uuid=device_uuid, detail=str(e))
+            return
+
+        recorder.record_message(db, device.id, base_event_type, is_test)
 
 @mqtt.on_disconnect()
 def on_disconnect(client, packet, exc=None):
     logger.warning("Disconnected from MQTT broker")
+    recorder.mark_disconnected()
+    # Persist the disconnect into the error feed so outages have history even
+    # across API restarts. Guarded: this can fire during app shutdown when the
+    # DB pool is already going away.
+    try:
+        with SessionLocal() as db:
+            recorder.record_error(db, "broker_disconnected",
+                                  detail=str(exc)[:500] if exc else None)
+    except Exception:
+        logger.exception("Could not persist broker disconnect")
 
 
 @mqtt.on_subscribe()

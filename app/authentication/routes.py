@@ -1,8 +1,13 @@
-from fastapi import APIRouter,Depends,BackgroundTasks,Query,HTTPException
+from typing import Optional, Union
+
+from fastapi import APIRouter,Depends,BackgroundTasks,Query,HTTPException,Request
 from fastapi.security import HTTPBearer
+from app.api_access.auth import check_rate_limit
+from app.audit.models import AuditAction
+from app.audit.recorder import audit
 from app.authentication.models import User
 from app.core.pagination import Page
-from app.authentication.schema import UserCreate, UserLogin, UserLogout, UserResponse, UserUpdate,UserLoginResponse,ResearcherRequestCreate,ResearcherRequestResponse,UpdateResearcherRequest,ForgotPasswordRequest,VerifyOTPRequest,ResetPasswordRequest,MessageResponse
+from app.authentication.schema import UserCreate, UserLogin, UserLogout, UserResponse, UserUpdate,UserLoginResponse,ResearcherRequestCreate,ResearcherRequestResponse,UpdateResearcherRequest,ForgotPasswordRequest,VerifyOTPRequest,ResetPasswordRequest,MessageResponse,TwoFactorChallengeResponse,TwoFactorVerifyRequest,TwoFactorResendRequest,TwoFactorToggleRequest,RefreshRequest
 from app.core.database import get_db
 from sqlalchemy.orm import Session
 from app.service.email_service import send_welcome_email,send_researcher_request_email,send_researcher_approved_email,send_researcher_declined_email,send_password_reset_otp_email
@@ -23,11 +28,60 @@ router = APIRouter(
 )
 
 
-@router.post("/login",status_code=status.HTTP_200_OK,response_model=UserLoginResponse)
-def login(login_details: UserLogin,session: Session=Depends(get_db)):
+def _client_ip(request: Request) -> str:
+    # request.client.host: behind the deploy proxy this is the proxy address
+    # until proxy-headers are configured, but it is never attacker-controlled
+    # (unlike X-Forwarded-For without a trusted-proxy list).
+    return request.client.host if request.client else "unknown"
+
+
+@router.post("/login",status_code=status.HTTP_200_OK,
+             response_model=Union[TwoFactorChallengeResponse, UserLoginResponse])
+def login(login_details: UserLogin, request: Request, session: Session=Depends(get_db)):
+    # IP-keyed throttle: every attempt costs a bcrypt verify, and 2FA makes
+    # this endpoint the natural brute-force target.
+    check_rate_limit(_client_ip(request), "auth_login", 10)
     try:
         user_service = UserService(session)
-        return user_service.login_user(login_details)
+        return user_service.login_user(login_details, ip=_client_ip(request))
+    except Exception as e:
+        raise e
+
+
+@router.post("/login/verify-2fa",status_code=status.HTTP_200_OK,response_model=UserLoginResponse)
+def verify_two_factor(verify_details: TwoFactorVerifyRequest, request: Request,
+                      session: Session=Depends(get_db)):
+    check_rate_limit(_client_ip(request), "auth_2fa_verify", 10)
+    try:
+        return UserService(session).verify_two_factor(
+            verify_details.two_factor_token, verify_details.code, ip=_client_ip(request))
+    except Exception as e:
+        raise e
+
+
+@router.post("/login/resend-2fa",status_code=status.HTTP_200_OK,response_model=MessageResponse)
+def resend_two_factor(resend_details: TwoFactorResendRequest, request: Request,
+                      session: Session=Depends(get_db)):
+    check_rate_limit(_client_ip(request), "auth_2fa_resend", 5)
+    try:
+        result = UserService(session).resend_two_factor(
+            resend_details.two_factor_token, ip=_client_ip(request))
+        return MessageResponse(message=result["message"])
+    except Exception as e:
+        raise e
+
+
+@router.post("/me/two-factor",status_code=status.HTTP_200_OK)
+def set_two_factor(toggle: TwoFactorToggleRequest, request: Request,
+                   session: Session = Depends(get_db),
+                   current_user: UserResponse = Depends(get_current_user)):
+    """Self-service 2FA toggle. Deliberately NOT part of PATCH /users/{id}:
+    nobody may flip someone else's second factor. Enabling invalidates the
+    caller's sessions (reauth_required=true) so the next login exercises 2FA."""
+    try:
+        return UserService(session).set_two_factor(
+            current_user.id, toggle.enabled, toggle.current_password,
+            ip=_client_ip(request))
     except Exception as e:
         raise e
 
@@ -46,7 +100,7 @@ def register(register_details: UserCreate, background_tasks:BackgroundTasks,
         # Admin-created accounts are vouched for, so they skip the pending gate.
         register_details.approval_status = ApprovalStatus.APPROVED
         user_service = UserService(session)
-        user = user_service.create_user(register_details)
+        user = user_service.create_user(register_details, actor=current_user)
         background_tasks.add_task(send_welcome_email, user.email, user.first_name)
         return user
     except Exception as e:
@@ -59,10 +113,17 @@ def me(user: UserResponse = Depends(get_current_user)):
 
 
 @router.post("/refresh-token",status_code=status.HTTP_200_OK,response_model=UserLoginResponse)
-def refresh_token(refresh_token: str,session: Session=Depends(get_db)):
+def refresh_token(session: Session=Depends(get_db),
+                  refresh_token: Optional[str] = None,
+                  body: Optional[RefreshRequest] = None):
+    # Body is the right place for a credential (query strings land in server/
+    # proxy logs); the query param stays only for already-deployed clients.
+    token = body.refresh_token if body else refresh_token
+    if not token:
+        raise HTTPException(status_code=422, detail="refresh_token is required")
     try:
         user_service = UserService(session)
-        return user_service.refresh_token(refresh_token)
+        return user_service.refresh_token(token)
     except Exception as e:
         raise e
     
@@ -157,14 +218,14 @@ def update_user(user_id: int, update_data: UserUpdate, session: Session = Depend
             # …and may not move users to another cluster.
             if "cluster_id" in update_data.model_fields_set and update_data.cluster_id != current_user.cluster_id:
                 raise HTTPException(status_code=403, detail="Only a super admin can move users between clusters")
-        return service.update_user(user_id, update_data)
+        return service.update_user(user_id, update_data, actor=current_user)
     except Exception as e:
         raise e
 
 
 
 @router.get("/researcher-requests",status_code=status.HTTP_200_OK,response_model=Page[ResearcherRequestResponse],
-            dependencies=[Depends(get_current_user)])
+            dependencies=[Depends(require_super_admin)])
 def get_researcher_requests(session: Session = Depends(get_db),
                             page: int = Query(default=1, ge=1),
                             page_size: int = Query(default=20, ge=1, le=100)):
@@ -189,9 +250,11 @@ def create_researcher_request(request_data: ResearcherRequestCreate, background_
     
 
 
-@router.patch("/researcher-requests/{request_id}/status",status_code=status.HTTP_200_OK,response_model=ResearcherRequestResponse,
-              dependencies=[Depends(get_current_user)])
-def update_researcher_request_status(request_id: int, status: str, background_tasks:BackgroundTasks,session: Session = Depends(get_db)):
+@router.patch("/researcher-requests/{request_id}/status",status_code=status.HTTP_200_OK,response_model=ResearcherRequestResponse)
+def update_researcher_request_status(request_id: int, status: str, background_tasks:BackgroundTasks,session: Session = Depends(get_db),
+                                     current_user: UserResponse = Depends(require_super_admin)):
+    # SUPER_ADMIN only: approval grants cluster access. Previously any
+    # authenticated user could approve requests — including their own.
     try:
         normalized_status = status.strip().lower()
         if normalized_status == "declined":
@@ -217,6 +280,10 @@ def update_researcher_request_status(request_id: int, status: str, background_ta
         elif normalized_status == "rejected":
             background_tasks.add_task(send_researcher_declined_email, researcher_request.user.email, researcher_request.user.first_name)
             emit(session, NotificationEvent.RESEARCHER_REQUEST_REJECTED, user=researcher_request.user)
+        audit(session, AuditAction.RESEARCHER_REQUEST_DECIDED,
+              actor_user_id=current_user.id, actor_email=current_user.email,
+              target_type="researcher_request", target_id=request_id,
+              detail={"status": normalized_status})
         return researcher_request
     except Exception as e:
         raise e
@@ -224,7 +291,7 @@ def update_researcher_request_status(request_id: int, status: str, background_ta
 
 
 @router.patch("/researcher-requests/{request_id}",status_code=status.HTTP_200_OK,response_model=ResearcherRequestResponse,
-              dependencies=[Depends(get_current_user)])
+              dependencies=[Depends(require_super_admin)])
 def update_researcher_request(request_id: int, request_data: UpdateResearcherRequest, background_tasks:BackgroundTasks,session: Session = Depends(get_db)):
     try:
         researcher_request_service = ResearcherRequestService(session)

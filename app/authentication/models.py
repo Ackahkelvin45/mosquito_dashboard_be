@@ -16,6 +16,12 @@ class User(Base):
     last_name: Mapped[str] = mapped_column(String(100))
     hashed_password: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # FR-4: mandatory for ADMIN/SUPER_ADMIN regardless of this flag (the
+    # service computes "effective 2FA"); USERs opt in via /auth/me/two-factor.
+    two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Bumped on password reset / role change / deactivation / 2FA enable —
+    # tokens carry it as "ver", so a bump invalidates every existing session.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     approval_status: Mapped[ApprovalStatus] = mapped_column(Enum(ApprovalStatus), default=ApprovalStatus.PENDING)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.USER)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
@@ -100,8 +106,34 @@ class PasswordResetOTP(Base):
     otp_code: Mapped[str] = mapped_column(String(255))
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     is_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Wrong guesses burn the code after MAX_OTP_ATTEMPTS — without this a
+    # 6-digit code could be brute-forced for its whole validity window.
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     user: Mapped["User"] = relationship("User")
 
     def __repr__(self):
         return f"PasswordResetOTP(id={self.id}, user_id={self.user_id}, expires_at={self.expires_at})"
+
+
+class LoginOTP(Base):
+    """2FA login challenge (FR-4). One live row per user (previous ones are
+    invalidated on re-login). The code is stored bcrypt-hashed; the challenge
+    token — which binds verify-2fa to the successful password check — is
+    stored SHA-256-hashed and is what the row is looked up by."""
+    __tablename__ = "login_otps"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(255))
+    challenge_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Resend cooldown anchor — resend always re-emails (a new code), never
+    # silently reuses one the mailer may have failed to deliver.
+    last_sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    user: Mapped["User"] = relationship("User")
+
+    def __repr__(self):
+        return f"LoginOTP(id={self.id}, user_id={self.user_id}, expires_at={self.expires_at})"

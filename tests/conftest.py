@@ -100,6 +100,16 @@ def db_session(engine, TestingSessionLocal):
 # ── Deterministic channel dispatch ───────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
+def reset_alert_settings_cache():
+    """The threshold snapshot is process-global; the DB is recreated per test.
+    Without this, test A's cached values leak into test B's empty tables."""
+    from app.notification import alert_settings
+    alert_settings.invalidate()
+    yield
+    alert_settings.invalidate()
+
+
+@pytest.fixture(autouse=True)
 def dispatch_recorder(monkeypatch):
     """Replace the daemon-thread channel dispatch with an in-test recorder.
 
@@ -121,12 +131,14 @@ def dispatch_recorder(monkeypatch):
 
 @pytest.fixture
 def app(db_session):
+    from app.monitoring.routes import router as monitoring_router
     from app.notification.push_routes import router as push_router
     from app.notification.routes import router as notification_router
 
     application = FastAPI()
     application.include_router(notification_router, prefix="/notifications")
     application.include_router(push_router, prefix="/push")
+    application.include_router(monitoring_router, prefix="/monitoring")
     application.dependency_overrides[get_db] = lambda: db_session
     return application
 
@@ -171,17 +183,28 @@ def make_user(db_session):
         email: str | None = None,
         first_name: str = "Test",
         last_name: str = "User",
+        password: str | None = None,
+        **overrides,
     ) -> User:
         n = next(_counter)
+        # Real bcrypt hash only when a test actually logs in — the sentinel
+        # keeps every other test fast (checkpw would raise on it, but only
+        # the login path ever calls checkpw).
+        if password is not None:
+            from app.core.security.hashHelper import HashHelper
+            hashed = HashHelper.hash_password(password)
+        else:
+            hashed = "not-a-real-hash"
         user = User(
             email=email or f"user{n}-{uuid.uuid4().hex[:6]}@example.com",
             first_name=first_name,
             last_name=last_name,
-            hashed_password="not-a-real-hash",
+            hashed_password=hashed,
             is_active=is_active,
-            approval_status=ApprovalStatus.APPROVED,
+            approval_status=overrides.pop("approval_status", ApprovalStatus.APPROVED),
             role=role,
             cluster_id=cluster_id,
+            **overrides,
         )
         db_session.add(user)
         db_session.commit()
@@ -218,11 +241,16 @@ def make_device(db_session):
         **overrides,
     ) -> Device:
         n = next(_counter)
+        resolved_activity = last_activity or datetime.utcnow()
+        # The liveness heartbeat mirrors last_activity unless a test pins it —
+        # a device that was "active" N ago was, in these fixtures, sending
+        # sensor_data N ago.
+        overrides.setdefault("last_sensor_data_at", resolved_activity)
         device = Device(
             device_uuid=f"dev-{n}-{uuid.uuid4().hex[:6]}",
             name=name or f"Device {n}",
             cluster_id=cluster.id if cluster is not None else None,
-            last_activity=last_activity or datetime.utcnow(),
+            last_activity=resolved_activity,
             **overrides,
         )
         db_session.add(device)

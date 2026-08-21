@@ -10,11 +10,14 @@ from utils.trap_status import parse_trap_status
 # Staleness window for the STATUS CHARTS only (sampling trap state over time).
 ACTIVE_WINDOW_HOURS = 24
 
-# Single source of truth for device on/off: silent longer than this = offline.
-# Shared by the is_active badge and the offline-detection job so they can
-# never disagree. Firmware heartbeats every ~5s (sensor_data), so 5 minutes
-# is ~60 missed beats — far beyond a WiFi blip or an SD-queue flush gap.
-OFFLINE_AFTER_MIN = int(os.getenv("NOTIFY_OFFLINE_AFTER_MIN", "5"))
+# Single source of truth for device on/off: no sensor_data (the periodic
+# telemetry message — mosquito_data events don't count, they're sporadic)
+# for longer than this = offline. Shared by the is_active badge and the
+# offline-detection job so they can never disagree. The firmware's publish
+# interval is operator-configurable, so 10 minutes is the agreed threshold
+# that comfortably covers the configured cadence plus a WiFi blip or an
+# SD-queue flush gap.
+OFFLINE_AFTER_MIN = int(os.getenv("NOTIFY_OFFLINE_AFTER_MIN", "10"))
 
 
 
@@ -158,7 +161,8 @@ class SensorReadingWithDeviceResponse(SensorDataResponse):
 
 class DeviceResponse(DeviceBase):
     id: int = Field(...,description="ID of the device")
-    last_activity: datetime = Field(...,description="Last activity timestamp of the device")
+    last_activity: datetime = Field(...,description="Last activity timestamp of the device (any MQTT message)")
+    last_sensor_data_at: Optional[datetime] = Field(None, description="When the device last sent periodic sensor_data telemetry — the liveness heartbeat behind is_active. Null if it has never sent sensor_data.")
     created_at: datetime = Field(...,description="Created at timestamp of the device")
     updated_at: datetime = Field(...,description="Updated at timestamp of the device")
     total_mosquito_count: int = Field(...,description="Total mosquito count recorded by the device")
@@ -167,15 +171,15 @@ class DeviceResponse(DeviceBase):
     latest_reading: Optional[SensorDataResponse] = Field(None, description="Latest sensor reading from the device")
 
     @computed_field(
-        description=f"Online if the device reported activity within the last {OFFLINE_AFTER_MIN} min (same threshold as the offline-detection job); offline if it never reported or has been silent longer.",
+        description=f"Online if the device sent sensor_data within the last {OFFLINE_AFTER_MIN} min (same threshold as the offline-detection job); offline if it never sent sensor_data or has been silent longer. Sporadic mosquito_data events don't count toward liveness.",
     )
     @property
     def is_active(self) -> bool:
-        if not self.last_activity:
+        if not self.last_sensor_data_at:
             return False
-        last = self.last_activity
+        last = self.last_sensor_data_at
         now = datetime.now(timezone.utc)
-        # last_activity may be stored timezone-naive; compare on the same basis.
+        # last_sensor_data_at may be stored timezone-naive; compare on the same basis.
         if last.tzinfo is None:
             now = now.replace(tzinfo=None)
         return (now - last) <= timedelta(minutes=OFFLINE_AFTER_MIN)
@@ -184,6 +188,19 @@ class DeviceResponse(DeviceBase):
 
 
 
+
+
+class UnregisteredSightingResponse(BaseModel):
+    """A UUID publishing MQTT data with no registered device behind it."""
+    device_uuid: str
+    first_seen: datetime
+    last_seen: datetime
+    message_count: int
+    last_topic: Optional[str] = None
+    latitude: Optional[float] = Field(None, description="Last GPS fix seen in its payloads (normalised), for prefilling registration")
+    longitude: Optional[float] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DeviceClusterResponse(BaseModel):

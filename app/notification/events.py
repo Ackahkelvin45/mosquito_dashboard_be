@@ -43,6 +43,7 @@ are tolerated and ignored):
     CLUSTER_DEVICE_ADDED         cluster, device
     CLUSTER_DEVICE_REMOVED       cluster, device
     MAINTENANCE_DUE              device, days_inactive?
+    PIPELINE_SILENT              silent_minutes, device_count
     DAILY_SUMMARY                user, stats?, body?
     WEEKLY_SUMMARY               user, stats?, body?
     TEST                         user
@@ -58,6 +59,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.device.models import MosquitoEvent
+from app.notification.alert_settings import get_thresholds
 from app.notification.enums import (
     NotificationCategory,
     NotificationSeverity,
@@ -133,6 +135,7 @@ class NotificationEvent(StrEnum):
     CLUSTER_DEVICE_ADDED = "CLUSTER_DEVICE_ADDED"
     CLUSTER_DEVICE_REMOVED = "CLUSTER_DEVICE_REMOVED"
     MAINTENANCE_DUE = "MAINTENANCE_DUE"
+    PIPELINE_SILENT = "PIPELINE_SILENT"
     DAILY_SUMMARY = "DAILY_SUMMARY"
     WEEKLY_SUMMARY = "WEEKLY_SUMMARY"
     TEST = "TEST"
@@ -220,30 +223,32 @@ def _species_detected(service, *, device, species=None, genus=None, sex=None,
 
 
 def _activity_surge(service, *, device, count=None, **_):
+    limits = get_thresholds(service.session)
     if count is None:
-        since = datetime.utcnow() - timedelta(minutes=NOTIFY_SURGE_WINDOW_MIN)
+        since = datetime.utcnow() - timedelta(minutes=limits.surge_window_min)
         count = (
             service.session.query(func.count(MosquitoEvent.id))
             .filter(MosquitoEvent.device_id == device.id, MosquitoEvent.timestamp >= since)
             .scalar()
             or 0
         )
-    if count <= NOTIFY_SURGE_THRESHOLD:
+    if count <= limits.surge_threshold:
         return
 
     service.notify_cluster(
         device.cluster_id,
         title=f"Mosquito activity surge at {device.name}",
         body=(
-            f"{count} mosquito detections in the last {NOTIFY_SURGE_WINDOW_MIN} minutes "
-            f"at {device.name} (threshold: {NOTIFY_SURGE_THRESHOLD}). "
+            f"{count} mosquito detections in the last {limits.surge_window_min} minutes "
+            f"at {device.name} (threshold: {limits.surge_threshold}). "
             "Unusually high activity may indicate a breeding site nearby."
         ),
         notification_type=NotificationType.ACTIVITY_SURGE,
         severity=NotificationSeverity.WARNING,
         category=NotificationCategory.MOSQUITO,
-        payload={"count": count, "window_minutes": NOTIFY_SURGE_WINDOW_MIN,
-                 "threshold": NOTIFY_SURGE_THRESHOLD, "device_uuid": device.device_uuid},
+        payload={"count": count, "window_minutes": limits.surge_window_min,
+                 "threshold": limits.surge_threshold, "device_uuid": device.device_uuid},
+        measured={"surge_count": count},
         icon="bug",
         action_url=f"/devices/{device.id}",
         device_id=device.id,
@@ -253,15 +258,16 @@ def _activity_surge(service, *, device, count=None, **_):
 
 
 def _low_battery(service, *, device, voltage=None, pct=None, **_):
+    limits = get_thresholds(service.session)
     if pct is not None:
-        if pct >= NOTIFY_BATTERY_CRITICAL_PCT:
+        if pct >= limits.battery_critical_pct:
             return
-        critical = pct < BATTERY_URGENT_PCT
+        critical = pct < limits.battery_urgent_pct
         level = f"{pct}%"
     elif voltage is not None:
-        if voltage >= NOTIFY_BATTERY_CRITICAL_V:
+        if voltage >= limits.battery_critical_v:
             return
-        critical = voltage < BATTERY_URGENT_V
+        critical = voltage < limits.battery_urgent_v
         level = f"{voltage:.2f}V"
     else:
         return
@@ -279,6 +285,7 @@ def _low_battery(service, *, device, voltage=None, pct=None, **_):
         severity=NotificationSeverity.CRITICAL if critical else NotificationSeverity.WARNING,
         category=NotificationCategory.SENSOR,
         payload={"voltage": voltage, "battery_pct": pct, "device_uuid": device.device_uuid},
+        measured={"battery_v": voltage} if voltage is not None else None,
         icon="battery-low",
         action_url=f"/devices/{device.id}",
         device_id=device.id,
@@ -305,20 +312,24 @@ def _trap_triggered(service, *, device, **_):
 
 
 def _extreme_temperature(service, *, device, temperature, **_):
-    if temperature is None or NOTIFY_TEMP_MIN <= temperature <= NOTIFY_TEMP_MAX:
+    limits = get_thresholds(service.session)
+    if temperature is None or limits.temp_min <= temperature <= limits.temp_max:
         return
     service.notify_cluster(
         device.cluster_id,
         title=f"Extreme temperature at {device.name} ({temperature:.1f}°C)",
         body=(
             f"{device.name} reported {temperature:.1f}°C, outside the expected "
-            f"range of {NOTIFY_TEMP_MIN:.0f}–{NOTIFY_TEMP_MAX:.0f}°C. "
+            f"range of {limits.temp_min:.0f}–{limits.temp_max:.0f}°C. "
             "Check the device environment and sensor health."
         ),
         notification_type=NotificationType.EXTREME_TEMPERATURE,
         severity=NotificationSeverity.WARNING,
         category=NotificationCategory.SENSOR,
         payload={"temperature": temperature, "device_uuid": device.device_uuid},
+        # Personal-threshold filtering applies only to the HIGH side — a
+        # low-side breach always delivers per the global rule.
+        measured={"temperature_high": temperature} if temperature > limits.temp_max else None,
         icon="thermometer",
         action_url=f"/devices/{device.id}",
         device_id=device.id,
@@ -328,20 +339,22 @@ def _extreme_temperature(service, *, device, temperature, **_):
 
 
 def _extreme_humidity(service, *, device, humidity, **_):
-    if humidity is None or NOTIFY_HUMIDITY_MIN <= humidity <= NOTIFY_HUMIDITY_MAX:
+    limits = get_thresholds(service.session)
+    if humidity is None or limits.humidity_min <= humidity <= limits.humidity_max:
         return
     service.notify_cluster(
         device.cluster_id,
         title=f"Extreme humidity at {device.name} ({humidity:.0f}%)",
         body=(
             f"{device.name} reported {humidity:.0f}% humidity, outside the expected "
-            f"range of {NOTIFY_HUMIDITY_MIN:.0f}–{NOTIFY_HUMIDITY_MAX:.0f}%. "
+            f"range of {limits.humidity_min:.0f}–{limits.humidity_max:.0f}%. "
             "Check the device environment and sensor health."
         ),
         notification_type=NotificationType.EXTREME_HUMIDITY,
         severity=NotificationSeverity.WARNING,
         category=NotificationCategory.SENSOR,
         payload={"humidity": humidity, "device_uuid": device.device_uuid},
+        measured={"humidity_high": humidity} if humidity > limits.humidity_max else None,
         icon="droplets",
         action_url=f"/devices/{device.id}",
         device_id=device.id,
@@ -418,9 +431,9 @@ def _device_offline(service, *, device, **_):
         device.cluster_id,
         title=f"Device offline: {device.name}",
         body=(
-            f"{device.name} has stopped reporting data"
-            + (f" (last activity {device.last_activity:%Y-%m-%d %H:%M} UTC)"
-               if device.last_activity else "")
+            f"{device.name} has stopped reporting sensor data"
+            + (f" (last sensor data {device.last_sensor_data_at:%Y-%m-%d %H:%M} UTC)"
+               if device.last_sensor_data_at else "")
             + ". Check power, battery and connectivity."
         ),
         notification_type=NotificationType.DEVICE_OFFLINE,
@@ -430,6 +443,30 @@ def _device_offline(service, *, device, **_):
         icon="wifi-off",
         action_url=f"/devices/{device.id}",
         device_id=device.id,
+    )
+
+
+def _pipeline_silent(service, *, silent_minutes=None, device_count=None, **_):
+    # notify_cluster(None) targets super admins only — this is an
+    # infrastructure alarm, not a per-device one.
+    service.notify_cluster(
+        None,
+        title="⚠️ Data pipeline silent — no MQTT messages arriving",
+        body=(
+            "No device has sent any data"
+            + (f" for ~{silent_minutes} minutes" if silent_minutes else "")
+            + (f" across {device_count} registered device(s)" if device_count else "")
+            + ". Every trap going quiet at once usually means the MQTT broker "
+            "or the server's connection is down — check System Health."
+        ),
+        notification_type=NotificationType.PIPELINE_SILENT,
+        severity=NotificationSeverity.CRITICAL,
+        category=NotificationCategory.SYSTEM,
+        payload={"silent_minutes": silent_minutes, "device_count": device_count},
+        icon="wifi-off",
+        action_url="/system-health",
+        dedupe_key="pipeline_silent",
+        dedupe_window_minutes=60,
     )
 
 
@@ -733,6 +770,7 @@ _HANDLERS = {
     NotificationEvent.CLUSTER_DEVICE_ADDED: _cluster_device_added,
     NotificationEvent.CLUSTER_DEVICE_REMOVED: _cluster_device_removed,
     NotificationEvent.MAINTENANCE_DUE: _maintenance_due,
+    NotificationEvent.PIPELINE_SILENT: _pipeline_silent,
     NotificationEvent.DAILY_SUMMARY: _daily_summary,
     NotificationEvent.WEEKLY_SUMMARY: _weekly_summary,
     NotificationEvent.TEST: _test,

@@ -416,6 +416,9 @@ def main() -> None:
                 .where(SensorDeviceReading.device_id == device.id)
             ).scalar_one_or_none()
             device.last_activity = last or now
+            # Liveness heartbeat mirrors the newest sensor reading, else the
+            # whole seeded fleet shows offline in the UI.
+            device.last_sensor_data_at = last or now
         session.commit()
 
         print(

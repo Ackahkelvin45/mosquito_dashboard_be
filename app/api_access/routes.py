@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.api_access.models import ApiKey
 from app.api_access.schema import ApiKeyCreate, ApiKeyCreatedResponse, ApiKeyResponse
+from app.audit.models import AuditAction
+from app.audit.recorder import audit
 from app.authentication.enums import ApprovalStatus
 from app.authentication.models import User
 from app.authentication.schema import UserResponse
@@ -56,6 +58,9 @@ def create_api_key(
     session.add(key)
     session.commit()
     session.refresh(key)
+    audit(session, AuditAction.API_KEY_CREATED, actor_user_id=current_user.id,
+          actor_email=current_user.email, target_type="api_key", target_id=key.id,
+          detail={"name": key.name, "prefix": key.key_prefix})
     return ApiKeyCreatedResponse(
         **ApiKeyResponse.model_validate(key).model_dump(),
         api_key=raw,
@@ -143,6 +148,9 @@ def revoke_api_key(
         key.revoked_at = datetime.utcnow()
         key.revoked_by = current_user.id
         session.commit()
+        audit(session, AuditAction.API_KEY_REVOKED, actor_user_id=current_user.id,
+              actor_email=current_user.email, target_type="api_key", target_id=key.id,
+              detail={"prefix": key.key_prefix, "owner_user_id": key.user_id})
     # Revoking an already-revoked key is a no-op 204 (idempotent delete).
 
 
@@ -165,4 +173,8 @@ def revoke_user_keys(
         )
     )
     session.commit()
+    if count:
+        audit(session, AuditAction.API_KEYS_BULK_REVOKED, actor_user_id=current_user.id,
+              actor_email=current_user.email, target_type="user", target_id=user_id,
+              detail={"revoked": count})
     return {"revoked": count}

@@ -82,6 +82,8 @@ class TestHandleSensorData:
         assert reading.battery_voltage == 3.7
         assert reading.timestamp == datetime(2026, 7, 30, 10, 0, 0)
         assert (datetime.utcnow() - device.last_activity).total_seconds() < 5
+        # sensor_data is the liveness heartbeat.
+        assert (datetime.utcnow() - device.last_sensor_data_at).total_seconds() < 5
         # Healthy payload: no notifications at all.
         assert _types(db_session) == []
 
@@ -320,6 +322,17 @@ class TestHandleMosquitoEvent:
         handle_mosquito_event(db_session, device, payload)
         assert db_session.query(MosquitoEvent).count() == 1
 
+    def test_mosquito_event_does_not_stamp_liveness_heartbeat(self, db_session,
+                                                              super_admin, make_device):
+        # mosquito_data refreshes last_activity ("last seen") but NOT
+        # last_sensor_data_at — a detection burst must not mask a dead
+        # telemetry loop in the eyes of the offline detector.
+        stale = datetime.utcnow() - timedelta(hours=2)
+        device = make_device(last_sensor_data_at=stale)
+        handle_mosquito_event(db_session, device, _mosquito_payload())
+        assert (datetime.utcnow() - device.last_activity).total_seconds() < 5
+        assert device.last_sensor_data_at == stale
+
     def test_test_mode_event_not_counted_or_alerted(self, db_session, super_admin,
                                                      make_device):
         # A vector-species detection while a device is in Test mode must be
@@ -522,3 +535,166 @@ def test_test_topic_names_are_derived_from_the_live_topic_names():
     # is explicit that Test-mode devices publish to <live topic>_test.
     assert mqtt_client.TOPIC_SENSOR_DATA_TEST == f"{mqtt_client.TOPIC_SENSOR_DATA}_test"
     assert mqtt_client.TOPIC_MOSQUITO_COUNT_TEST == f"{mqtt_client.TOPIC_MOSQUITO_COUNT}_test"
+
+
+class TestSchemaReferenceConformance:
+    """Field-by-field fidelity against MQTT_Schema_Reference.pdf, using the
+    AUTHORITATIVE wire format the real firmware sends: epoch-second integer
+    timestamps, trap_status as "ON"/"OFF" strings, and null for "no valid
+    reading" (which must reach the DB as NULL, never 0)."""
+
+    # The PDF's own example values.
+    SENSOR_WIRE = {
+        "timestamp": 1786270740,
+        "local_time": "2026-08-09 18:19:00",   # convenience only — ignored
+        "sensor_id": "AI4PEP_6825DD44B768",
+        "device_label": "Philippine_Trap_2",   # informational — ignored
+        "latitude": 14.2582913,
+        "longitude": 121.0678318,
+        "temp_internal": 29.4,
+        "humidity_internal": 45.8,
+        "pressure_internal": 1012.3,
+        "temp_external": 27.8,
+        "humidity_external": 78.5,
+        "pressure_external": 1010.2,
+        "rainfall": None,                      # hardware not deployed — ignored
+        "battery": 12.64043,
+        "battery_pct": 100,
+        "trap_status": "ON",
+        "esp1_link_alive": False,
+    }
+
+    MOSQUITO_WIRE = {
+        "timestamp": 1786270740,
+        "local_time": "2026-08-09 18:19:00",
+        "sensor_id": "AI4PEP_6825DD44B768",
+        "device_label": "Philippine_Trap_2",
+        "mosquito_data": [
+            {
+                "detection_timestamp": 1786270680,
+                "species": "Aedes sp.",
+                "genus": "aedes",
+                "age_group": "",
+                "sex": "female",
+                "p_mosq": 0.87,
+                "binary_decision": True,
+                "taxon_probs": {"anopheles": 0, "aedes": 0.91, "culex": 0},
+                "sex_probs": {"male": 0, "female": 0.85},
+                "species_probs": {"Anopheles gambiae": 0, "Aedes aegypti": 0,
+                                  "Culex quinquefasciatus": 0, "Aedes sp.": 0},
+                "inference_ms": 215,
+            }
+        ],
+    }
+
+    def test_sensor_data_wire_format_stored_faithfully(self, db_session, super_admin,
+                                                       make_device, no_geocoding):
+        device = make_device()
+        handle_sensor_data(db_session, device, dict(self.SENSOR_WIRE))
+
+        r = db_session.query(SensorDeviceReading).one()
+        # Epoch seconds is the authoritative time.
+        assert r.timestamp == datetime.utcfromtimestamp(1786270740)
+        assert r.internal_temperature == 29.4
+        assert r.internal_humidity == 45.8
+        assert r.internal_pressure == 1012.3
+        assert r.external_temperature == 27.8
+        assert r.external_humidity == 78.5
+        assert r.external_pressure == 1010.2
+        assert r.battery_voltage == 12.64043
+        assert r.battery_pct == 100
+        assert r.trap_status is True          # "ON" string, not a boolean
+        assert r.esp1_link_alive is False
+        assert r.is_test is False
+        # GPS fix was forwarded to the position pipeline.
+        assert no_geocoding == [(device.id, 14.2582913, 121.0678318)]
+        # Liveness heartbeat stamped by sensor_data.
+        assert (datetime.utcnow() - device.last_sensor_data_at).total_seconds() < 5
+
+    def test_null_means_null_never_zero(self, db_session, super_admin, make_device):
+        """PDF: null = 'no valid reading' — must never be coerced to 0."""
+        wire = dict(self.SENSOR_WIRE)
+        wire.update({"temp_internal": None, "humidity_internal": None,
+                     "pressure_internal": None, "esp1_link_alive": None,
+                     "battery_pct": None, "latitude": None, "longitude": None})
+        handle_sensor_data(db_session, make_device(), wire)
+        r = db_session.query(SensorDeviceReading).one()
+        assert r.internal_temperature is None
+        assert r.internal_humidity is None
+        assert r.internal_pressure is None
+        assert r.esp1_link_alive is None
+        assert r.battery_pct is None
+
+    def test_trap_status_off_string(self, db_session, super_admin, make_device):
+        handle_sensor_data(db_session, make_device(),
+                           dict(self.SENSOR_WIRE, trap_status="OFF"))
+        assert db_session.query(SensorDeviceReading).one().trap_status is False
+
+    def test_mosquito_data_wire_format_stored_faithfully(self, db_session, super_admin,
+                                                         make_device):
+        device = make_device()
+        before_total = device.total_mosquito_count or 0
+        handle_mosquito_event(db_session, device, json.loads(json.dumps(self.MOSQUITO_WIRE)))
+
+        event = db_session.query(MosquitoEvent).one()
+        assert event.timestamp == datetime.utcfromtimestamp(1786270740)  # event END
+        assert event.count == 1
+        assert event.is_test is False
+
+        i = db_session.query(MosquitoIndividualReading).one()
+        assert i.batch_id == event.id
+        assert i.detection_timestamp == datetime.utcfromtimestamp(1786270680)  # START
+        assert i.detection_timestamp <= event.timestamp
+        assert i.species == "Aedes sp."
+        assert i.genus == "aedes"
+        assert i.age_group == ""
+        assert i.sex == "female"
+        assert i.p_mosq == 0.87
+        assert i.binary_decision is True
+        # Confidence objects stored verbatim (winning class + zeros — NOT softmax).
+        assert i.taxon_probs == {"anopheles": 0, "aedes": 0.91, "culex": 0}
+        assert i.sex_probs == {"male": 0, "female": 0.85}
+        assert i.inference_ms == 215
+        assert device.total_mosquito_count == before_total + 1
+
+    def test_multi_entry_array_every_entry_saved(self, db_session, super_admin,
+                                                 make_device):
+        """PDF: 'treat as an array, don't assume length 1 will always hold'."""
+        device = make_device()
+        wire = json.loads(json.dumps(self.MOSQUITO_WIRE))
+        second = dict(wire["mosquito_data"][0], genus="culex", sex="male")
+        wire["mosquito_data"].append(second)
+        handle_mosquito_event(db_session, device, wire)
+        assert db_session.query(MosquitoEvent).count() == 2
+        genera = {i.genus for i in db_session.query(MosquitoIndividualReading).all()}
+        assert genera == {"aedes", "culex"}
+        assert device.total_mosquito_count == 2
+
+    def test_missing_sex_and_age_group_degrade_to_empty(self, db_session, super_admin,
+                                                        make_device):
+        """sex/age_group columns are NOT NULL; a malformed entry missing them
+        must still be stored (as "") instead of aborting the whole commit."""
+        wire = json.loads(json.dumps(self.MOSQUITO_WIRE))
+        del wire["mosquito_data"][0]["sex"]
+        del wire["mosquito_data"][0]["age_group"]
+        handle_mosquito_event(db_session, make_device(), wire)
+        i = db_session.query(MosquitoIndividualReading).one()
+        assert i.sex == ""
+        assert i.age_group == ""
+
+    def test_end_to_end_via_on_message_pdf_topic(self, db_session, super_admin,
+                                                 monkeypatch, TestingSessionLocal):
+        """Full dispatch with the PDF's real topic shape and sensor_id-style UUID."""
+        monkeypatch.setattr(mqtt_client, "SessionLocal", TestingSessionLocal)
+        from app.device.models import Device as DeviceModel
+        device = DeviceModel(device_uuid="AI4PEP_6825DD44B768", name="Philippine_Trap_2")
+        db_session.add(device)
+        db_session.commit()
+
+        asyncio.run(on_message(
+            None, "mosquito_dashboard/AI4PEP_6825DD44B768/sensor_data",
+            json.dumps(self.SENSOR_WIRE).encode(), 0, None,
+        ))
+        r = db_session.query(SensorDeviceReading).one()
+        assert r.device_id == device.id
+        assert r.timestamp == datetime.utcfromtimestamp(1786270740)

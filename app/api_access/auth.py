@@ -30,11 +30,14 @@ EXPORT_RATE_LIMIT_PER_MIN = 5
 # single-process uvicorn deployment; move to Redis if workers > 1.
 # Keyed on the OWNER's user id, not the key id: otherwise minting more keys
 # multiplies the limit.
-_windows: dict[tuple[str, int], tuple[int, int]] = {}
+_windows: dict[tuple[str, object], tuple[int, int]] = {}
 
 
-def check_rate_limit(user_id: int, bucket: str, limit: int) -> None:
-    """Fixed one-minute window per (bucket, owner). 429 above `limit`."""
+def check_rate_limit(user_id: "int | str", bucket: str, limit: int) -> None:
+    """Fixed one-minute window per (bucket, key). 429 above `limit`.
+
+    The key is normally the owner's user id; the auth endpoints also key on
+    the client IP string (unauthenticated callers have no user id yet)."""
     now = time.time()
     minute = int(now // 60)
     window_key = (bucket, user_id)

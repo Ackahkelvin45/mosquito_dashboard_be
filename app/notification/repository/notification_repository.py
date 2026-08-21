@@ -395,9 +395,11 @@ class NotificationPreferenceRepository(BaseRepository[NotificationPreference]):
 
     def update_preferences(self, user_id: int, **fields) -> NotificationPreference:
         preference = self.get_or_create(user_id)
+        # No `is not None` guard: the service passes model_dump(exclude_unset)
+        # so every key here was explicitly sent — and an explicit null is how
+        # a personal threshold is cleared back to "use global".
         for key, value in fields.items():
-            if value is not None:
-                setattr(preference, key, value)
+            setattr(preference, key, value)
         self.session.commit()
         self.session.refresh(preference)
         return preference

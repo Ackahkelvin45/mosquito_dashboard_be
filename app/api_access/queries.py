@@ -75,6 +75,7 @@ DEVICE_COLUMNS = {
     "cluster_id": Device.cluster_id,
     "total_mosquito_count": Device.total_mosquito_count,
     "last_activity": Device.last_activity,
+    "last_sensor_data_at": Device.last_sensor_data_at,
     "created_at": Device.created_at,
 }
 

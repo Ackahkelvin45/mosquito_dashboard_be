@@ -79,6 +79,13 @@ class Device(Base):
     location_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     gmap_link: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_activity: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    # Liveness heartbeat: stamped ONLY by sensor_data messages (the periodic
+    # telemetry), never by mosquito_data — event messages are sporadic, so a
+    # burst of detections must not mask a dead telemetry loop. NULL = the
+    # device has never sent sensor_data. This, not last_activity, drives the
+    # is_active badge and the offline-detection job; last_activity remains the
+    # any-message "last seen" shown in the UI and public API.
+    last_sensor_data_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # State marker for the offline detector job: set when the device is first
     # flagged offline, cleared (with a DEVICE_ONLINE notification) on recovery.
     offline_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -126,6 +133,33 @@ class Device(Base):
 
 
     
+
+
+class UnregisteredDeviceSighting(Base):
+    """A UUID that published MQTT data without being registered (TODO.md §1).
+
+    One row per stray UUID, upserted per message — turns the silent drop into
+    a visible prompt. The last payload (truncated) and the parsed GPS fix are
+    kept so the add-device form can be prefilled from the sighting; deleted
+    automatically when a matching device is registered, or dismissed by hand.
+    """
+    __tablename__ = "unregistered_device_sightings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    device_uuid: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_topic: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Parsed+normalised from the last payload that carried a GPS fix, so the
+    # registration form can prefill location without re-parsing JSON.
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    def __repr__(self):
+        return (f"UnregisteredDeviceSighting(uuid={self.device_uuid}, "
+                f"count={self.message_count}, last_seen={self.last_seen})")
 
 
 class SensorDeviceReading(Base):

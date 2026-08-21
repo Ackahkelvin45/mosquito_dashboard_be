@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -91,6 +91,74 @@ def update_preferences(preference_data: NotificationPreferenceUpdate,
         return NotificationService(session).update_preferences(current_user.id, preference_data)
     except Exception as e:
         raise e
+
+
+@router.get("/alert-settings", status_code=status.HTTP_200_OK)
+def get_alert_settings(session: Session = Depends(get_db),
+                       current_user: UserResponse = Depends(require_super_admin)):
+    """Current effective global thresholds (FR-18) plus the editable bounds —
+    one payload so the admin card can render limits without hardcoding."""
+    from dataclasses import asdict
+
+    from app.notification.alert_settings import EDITABLE_BOUNDS, get_thresholds, invalidate
+
+    invalidate()  # admin read = read-your-writes, never a stale snapshot
+    return {"values": asdict(get_thresholds(session)),
+            "bounds": {k: list(v) for k, v in EDITABLE_BOUNDS.items()}}
+
+
+@router.put("/alert-settings", status_code=status.HTTP_200_OK)
+def update_alert_settings(changes: dict[str, float],
+                          session: Session = Depends(get_db),
+                          current_user: UserResponse = Depends(require_super_admin)):
+    """Upsert global thresholds. Takes effect immediately (no restart).
+    Cross-field sanity (min < max, urgent ≤ critical) is enforced here."""
+    from dataclasses import asdict
+
+    from app.audit.models import AuditAction
+    from app.audit.recorder import audit
+    from app.notification.alert_settings import (
+        _INT_FIELDS, AlertSetting, EDITABLE_BOUNDS, get_thresholds, invalidate,
+    )
+
+    if not changes:
+        raise HTTPException(status_code=422, detail="No settings provided")
+    for name, value in changes.items():
+        bounds = EDITABLE_BOUNDS.get(name)
+        if bounds is None:
+            raise HTTPException(status_code=422, detail=f"Unknown setting '{name}'")
+        low, high = bounds
+        if not (low <= value <= high):
+            raise HTTPException(status_code=422,
+                                detail=f"{name} must be between {low:g} and {high:g}")
+
+    invalidate()
+    merged = {**asdict(get_thresholds(session)),
+              **{k: (int(v) if k in _INT_FIELDS else float(v)) for k, v in changes.items()}}
+    if merged["temp_min"] >= merged["temp_max"]:
+        raise HTTPException(status_code=422, detail="temp_min must be below temp_max")
+    if merged["humidity_min"] >= merged["humidity_max"]:
+        raise HTTPException(status_code=422, detail="humidity_min must be below humidity_max")
+    if merged["battery_urgent_v"] > merged["battery_critical_v"]:
+        raise HTTPException(status_code=422, detail="battery_urgent_v must be ≤ battery_critical_v")
+    if merged["battery_urgent_pct"] > merged["battery_critical_pct"]:
+        raise HTTPException(status_code=422, detail="battery_urgent_pct must be ≤ battery_critical_pct")
+
+    for name, value in changes.items():
+        row = session.query(AlertSetting).filter(AlertSetting.name == name).first()
+        if row is None:
+            session.add(AlertSetting(name=name, value=float(value),
+                                     updated_by=current_user.id))
+        else:
+            row.value = float(value)
+            row.updated_by = current_user.id
+    session.commit()
+    invalidate()
+    audit(session, AuditAction.ALERT_SETTINGS_UPDATED,
+          actor_user_id=current_user.id, actor_email=current_user.email,
+          detail={"changes": {k: float(v) for k, v in changes.items()}})
+    return {"values": {**asdict(get_thresholds(session))},
+            "bounds": {k: list(v) for k, v in EDITABLE_BOUNDS.items()}}
 
 
 @router.post("/test", status_code=status.HTTP_201_CREATED, response_model=NotificationResponse)

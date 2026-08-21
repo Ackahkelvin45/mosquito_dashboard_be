@@ -181,6 +181,8 @@ class TestPreferencesRoutes:
         data = response.json()
         assert data == {
             "species_alerts": True,
+            "surge_alerts": True,
+            "environment_alerts": True,
             "battery_alerts": True,
             "offline_alerts": True,
             "admin_alerts": True,
@@ -188,6 +190,10 @@ class TestPreferencesRoutes:
             "email_enabled": False,
             "push_enabled": True,
             "in_app_enabled": True,
+            "personal_temp_max": None,
+            "personal_humidity_max": None,
+            "personal_battery_min_v": None,
+            "personal_surge_threshold": None,
         }
 
     def test_put_partial_update(self, client, auth):

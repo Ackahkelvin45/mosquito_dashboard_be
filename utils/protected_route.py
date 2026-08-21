@@ -63,19 +63,25 @@ async def get_current_user(
     if not access_token:
         raise UnauthorizedException()
 
-    # verify_token enforces `type == "access"`. decode_token does not, which
-    # let a refresh token be replayed as an access token.
-    user_id = AuthHandler.verify_token(access_token, expected_type="access")
+    # verify_token_payload enforces `type == "access"` (a refresh token can
+    # never be replayed as an access token) and returns the claims so the
+    # session-version check below can read "ver".
+    payload = AuthHandler.verify_token_payload(access_token, expected_type="access")
+    user_id = int(payload["sub"])
 
-    try:
-        user = UserService(session).get_user_by_id(user_id)
-    except HTTPException:
+    user_row = session.query(User).filter(User.id == user_id).first()
+    if user_row is None:
         # Token was valid but the user is gone — that's an auth failure, not a 404.
         raise UnauthorizedException()
-
-    if not user:
+    if not user_row.is_active:
         raise UnauthorizedException()
-    return user
+    # Session invalidation: a password reset / role change / deactivation /
+    # 2FA enable bumps users.token_version, killing every earlier token.
+    # Pre-rollout tokens carry no "ver" and count as version 0.
+    if int(payload.get("ver", 0)) != int(user_row.token_version or 0):
+        raise UnauthorizedException()
+
+    return UserResponse.model_validate(user_row)
 
 
 async def get_current_user_or_guest(

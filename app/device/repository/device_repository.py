@@ -250,6 +250,9 @@ class DeviceRepository(BaseRepository[Device]):
             # timestamp: a skewed clock or an SD-queue backfill of old readings
             # must not make a live device look offline (or vice versa).
             device.last_activity = datetime.utcnow()
+            # Same liveness rule as the MQTT path: sensor_data (periodic by
+            # contract) is the heartbeat, regardless of transport.
+            device.last_sensor_data_at = datetime.utcnow()
             self.session.add(reading)
             self.session.commit()
             self.session.refresh(reading)

@@ -83,9 +83,10 @@ class TestOfflineDetection:
                                patch_job_sessions):
         device = make_device(last_activity=datetime.utcnow() - timedelta(hours=2))
         run_offline_detection()  # -> offline
-        # Device comes back.
+        # Device comes back (a sensor_data message stamps both columns).
         db_session.query(Device).filter(Device.id == device.id).update(
-            {"last_activity": datetime.utcnow()}
+            {"last_activity": datetime.utcnow(),
+             "last_sensor_data_at": datetime.utcnow()}
         )
         db_session.commit()
         run_offline_detection()  # -> online
@@ -93,6 +94,32 @@ class TestOfflineDetection:
         assert db_session.get(Device, device.id).offline_since is None
         assert len(_types(db_session, NotificationType.DEVICE_OFFLINE)) == 1
         assert len(_types(db_session, NotificationType.DEVICE_ONLINE)) == 1
+
+    def test_mosquito_activity_alone_does_not_count(self, db_session, super_admin,
+                                                    make_device, patch_job_sessions):
+        # Fresh last_activity (e.g. a mosquito_data burst) but a stale
+        # sensor_data heartbeat: the telemetry loop is dead -> offline.
+        device = make_device(
+            last_activity=datetime.utcnow(),
+            last_sensor_data_at=datetime.utcnow() - timedelta(hours=2),
+        )
+        run_offline_detection()
+        db_session.expire_all()
+        assert db_session.get(Device, device.id).offline_since is not None
+        assert len(_types(db_session, NotificationType.DEVICE_OFFLINE)) == 1
+
+    def test_never_reported_device_skipped(self, db_session, super_admin,
+                                           make_device, patch_job_sessions):
+        # NULL heartbeat = never sent sensor_data: shows offline in the UI,
+        # but the job never emits DEVICE_OFFLINE for it.
+        device = make_device(
+            last_activity=datetime.utcnow() - timedelta(hours=2),
+            last_sensor_data_at=None,
+        )
+        run_offline_detection()
+        db_session.expire_all()
+        assert db_session.get(Device, device.id).offline_since is None
+        assert _types(db_session, NotificationType.DEVICE_OFFLINE) == []
 
 
 # ── Cleanup job ──────────────────────────────────────────────────────────────
@@ -483,6 +510,7 @@ class TestSchedulerLifecycle:
         assert sorted(first) == sorted([
             "offline-detection", "notification-cleanup", "push-retry",
             "daily-summary", "weekly-summary", "device-health",
+            "pipeline-watchdog", "monitoring-cleanup",
         ])
 
     def test_start_runs_job_and_stop_cancels(self, monkeypatch):

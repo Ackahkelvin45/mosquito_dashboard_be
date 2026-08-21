@@ -50,6 +50,9 @@ class UserResponse(UserBase):
     created_at: datetime = Field(...,description="Created at of the user")
     updated_at: datetime = Field(...,description="Updated at of the user")
     cluster: Optional[ClusterSummary] = Field(None, description="The cluster this user belongs to")
+    # FR-4: read-only here — toggled ONLY via POST /auth/me/two-factor
+    # (mandatory for ADMIN/SUPER_ADMIN regardless of this flag).
+    two_factor_enabled: bool = Field(False, description="Whether email-OTP 2FA is enabled for this account")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -72,6 +75,32 @@ class UserLoginResponse(BaseModel):
     access_token: str = Field(...,description="Access token of the user")
     refresh_token: str = Field(...,description="Refresh token of the user")
     user_id: Optional[int] = Field(None,description="ID of the user")
+
+
+class TwoFactorChallengeResponse(BaseModel):
+    """Returned by /auth/login instead of tokens when 2FA applies (FR-4)."""
+    two_factor_required: bool = Field(True, description="Always true on this response shape")
+    two_factor_token: str = Field(..., description="Opaque challenge to present to /auth/login/verify-2fa — binds the code to this password-verified login")
+    message: str = Field(..., description="Human-readable instruction")
+
+
+class TwoFactorVerifyRequest(BaseModel):
+    two_factor_token: str = Field(..., min_length=16, max_length=128)
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class TwoFactorResendRequest(BaseModel):
+    two_factor_token: str = Field(..., min_length=16, max_length=128)
+
+
+class TwoFactorToggleRequest(BaseModel):
+    enabled: bool = Field(..., description="Desired state")
+    current_password: str = Field(..., min_length=8, max_length=50,
+                                  description="Re-proven so a hijacked session can't flip the second factor")
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(..., description="The refresh token (in the body — never the query string, which lands in server logs)")
 
 class UserLogout(BaseModel):
     message: str = Field(...,description="Message of the user")

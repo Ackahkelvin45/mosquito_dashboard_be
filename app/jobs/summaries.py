@@ -25,7 +25,8 @@ from app.device.models import (
     MosquitoEvent,
     MosquitoIndividualReading,
 )
-from app.notification.events import NOTIFY_BATTERY_CRITICAL_V, NotificationEvent, emit
+from app.notification.alert_settings import get_thresholds
+from app.notification.events import NotificationEvent, emit
 
 logger = logging.getLogger(__name__)
 
@@ -105,13 +106,16 @@ def _device_group_stats(session, devices, since: datetime) -> dict:
         top_species = top[0] if top else None
 
     offline_devices = sum(1 for device in devices if device.offline_since is not None)
+    # Resolved live (never from-imported) so the digest count always agrees
+    # with the alert threshold an admin may have edited at runtime.
+    battery_critical_v = get_thresholds().battery_critical_v
     low_battery_devices = 0
     for device in devices:
         reading = device.latest_reading  # correlated LIMIT 1 — cheap per device
         if (
             reading is not None
             and reading.battery_voltage is not None
-            and reading.battery_voltage < NOTIFY_BATTERY_CRITICAL_V
+            and reading.battery_voltage < battery_critical_v
         ):
             low_battery_devices += 1
 

@@ -174,7 +174,8 @@ Patterns that matter when testing this system:
 - **Jobs**: each `run_*` function is a plain sync callable that opens `SessionLocal` —
   point `SessionLocal` at the test engine (monkeypatch in the job module) and call it
   directly; no scheduler needed. The offline job's state machine is deterministic from
-  `last_activity` / `offline_since`.
+  `last_sensor_data_at` / `offline_since` (`last_activity` is only "last seen", any
+  message; the heartbeat is stamped by sensor_data alone).
 - **MQTT triggers**: call `handle_sensor_data(db, device, payload_dict)` /
   `handle_mosquito_event(...)` directly with dict payloads — no broker required.
 - **Env-derived constants** (`NOTIFY_*`) are read at import time into module globals;

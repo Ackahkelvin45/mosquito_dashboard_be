@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -95,10 +95,22 @@ class NotificationPreference(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), unique=True, index=True)
     species_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Surge/environment split out of species (FR-18): each threshold-bearing
+    # alert family gets its own toggle so personal thresholds stay coherent.
+    surge_alerts: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    environment_alerts: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     battery_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
     offline_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
     admin_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
     researcher_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Personal thresholds (FR-18 Phase B), FILTER-ONLY: null = use the global
+    # setting; a value may only be on the PERMISSIVE side of global (raise the
+    # bar, never lower it) — the emission gate itself never widens, so one
+    # user's setting can never arm a dedupe window for everyone else.
+    personal_temp_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    personal_humidity_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    personal_battery_min_v: Mapped[float | None] = mapped_column(Float, nullable=True)
+    personal_surge_threshold: Mapped[int | None] = mapped_column(Integer, nullable=True)
     email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     push_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     in_app_enabled: Mapped[bool] = mapped_column(Boolean, default=True)

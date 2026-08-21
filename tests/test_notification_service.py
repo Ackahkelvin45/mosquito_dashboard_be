@@ -163,20 +163,39 @@ class TestPreferenceGating:
         assert service.send(user.id, **_send_kwargs()) is None
         assert db_session.query(Notification).count() == 0
 
-    @pytest.mark.parametrize("blocked_type", [
-        NotificationType.SPECIES_DETECTED,
-        NotificationType.ACTIVITY_SURGE,
-    ])
-    def test_species_alerts_gate(self, service, make_user, db_session, blocked_type):
+    def test_species_alerts_gate(self, service, make_user, db_session):
         user = make_user()
         self._disable(service, user.id, species_alerts=False)
         assert service.send(
-            user.id, **_send_kwargs(notification_type=blocked_type)
+            user.id, **_send_kwargs(notification_type=NotificationType.SPECIES_DETECTED)
         ) is None
+        # Surge split into its own toggle (FR-18): no longer gated by species.
+        assert service.send(
+            user.id, **_send_kwargs(notification_type=NotificationType.ACTIVITY_SURGE)
+        ) is not None
         # Unrelated types still pass.
         assert service.send(
             user.id, **_send_kwargs(notification_type=NotificationType.LOW_BATTERY)
         ) is not None
+
+    def test_surge_alerts_gate(self, service, make_user):
+        user = make_user()
+        self._disable(service, user.id, surge_alerts=False)
+        assert service.send(
+            user.id, **_send_kwargs(notification_type=NotificationType.ACTIVITY_SURGE)
+        ) is None
+        assert service.send(
+            user.id, **_send_kwargs(notification_type=NotificationType.SPECIES_DETECTED)
+        ) is not None
+
+    def test_environment_alerts_gate(self, service, make_user):
+        user = make_user()
+        self._disable(service, user.id, environment_alerts=False)
+        for blocked in (NotificationType.EXTREME_TEMPERATURE,
+                        NotificationType.EXTREME_HUMIDITY):
+            assert service.send(
+                user.id, **_send_kwargs(notification_type=blocked)
+            ) is None
 
     def test_battery_alerts_gate(self, service, make_user):
         user = make_user()

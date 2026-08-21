@@ -23,6 +23,9 @@ from app.authentication.repository.userrepository import UserRepository
 
 
 def reset_passwords(session, emails: list[str], password: str) -> tuple[list[str], list[str]]:
+    from app.audit.models import AuditAction
+    from app.audit.recorder import audit
+
     repo = UserRepository(session)
     hashed = HashHelper.hash_password(password)
     updated, not_found = [], []
@@ -32,6 +35,14 @@ def reset_passwords(session, emails: list[str], password: str) -> tuple[list[str
             not_found.append(email)
             continue
         repo.update_password(user, hashed)
+        # Out-of-band credential change: kill the account's existing sessions
+        # and leave a trail — this CLI bypasses the OTP flow entirely, making
+        # it the highest-value action to audit.
+        user.token_version = int(user.token_version or 0) + 1
+        session.commit()
+        audit(session, AuditAction.PASSWORD_RESET_CLI,
+              actor_email=f"cli:{getpass.getuser()}",
+              target_type="user", target_id=user.id, detail={"email": email})
         updated.append(email)
     return updated, not_found
 

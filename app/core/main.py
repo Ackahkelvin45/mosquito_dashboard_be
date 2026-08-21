@@ -14,6 +14,8 @@ from app.notification.routes import router as notification_router
 from app.notification.push_routes import router as push_router
 from app.api_access.routes import router as api_keys_router
 from app.api_access.public_routes import router as public_api_router
+from app.monitoring.routes import router as monitoring_router
+from app.audit.routes import router as audit_router
 from utils.protected_route import get_current_user
 from app.authentication.schema import UserResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -115,6 +117,8 @@ app.include_router(notification_router, tags=["notifications"], prefix="/notific
 app.include_router(push_router, tags=["push"], prefix="/push")
 app.include_router(api_keys_router, tags=["api-keys"], prefix="/api-keys")
 app.include_router(public_api_router, tags=["public-api-v1"], prefix="/api/v1")
+app.include_router(monitoring_router, tags=["monitoring"], prefix="/monitoring")
+app.include_router(audit_router, tags=["audit"], prefix="/audit-logs")
 
 
 # ---------------------------

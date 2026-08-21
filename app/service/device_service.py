@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from app.core.pagination import Page, paginate
 from app.device.repository.device_repository import DeviceRepository
+from app.device.sightings import clear_sighting
 from app.notification.events import NotificationEvent, emit
 from app.device.schema import (
     DeviceCreate, DeviceResponse, DeviceUpdate,
@@ -39,6 +40,9 @@ class DeviceService:
             raise HTTPException(status_code=400, detail="Device already exists")
         device = self.device_repository.create_device(device_data)
         response = DeviceResponse.model_validate(device)
+        # Registering the device resolves any unregistered-sighting prompt
+        # for its UUID (TODO.md §1: cleared automatically, never left stale).
+        clear_sighting(self.session, device.device_uuid)
         if device.cluster is not None:
             emit(self.session, NotificationEvent.CLUSTER_DEVICE_ADDED,
                  cluster=device.cluster, device=device)

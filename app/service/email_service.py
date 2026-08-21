@@ -297,3 +297,31 @@ def send_password_reset_otp_email(to: str, first_name: str, otp: str) -> None:
         subject="Your Password Reset Code",
         body=html,
     )
+
+
+def _two_factor_code_email_html(first_name: str, code: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Your Sign-in Code</title></head>
+<body style="font-family: Arial, sans-serif; background:#f4f6f8; margin:0; padding:24px;">
+  <div style="max-width:480px; margin:0 auto; background:#ffffff; border-radius:8px; padding:32px;">
+    <h2 style="color:#1565C0; margin-top:0;">Sign-in verification</h2>
+    <p>Hi {first_name},</p>
+    <p>Use this code to finish signing in to the Mosquito Surveillance Dashboard:</p>
+    <p style="font-size:32px; letter-spacing:8px; font-weight:bold; text-align:center;
+              background:#f0f4ff; border-radius:8px; padding:16px;">{code}</p>
+    <p>The code expires in 10 minutes. If you didn't try to sign in, change your
+       password now — someone else knows it.</p>
+  </div>
+</body>
+</html>"""
+
+
+def send_two_factor_code_email(to: str, first_name: str, code: str) -> None:
+    """Send the 2FA sign-in code (FR-4). Raises on failure — the login flow
+    must surface delivery problems, not swallow them."""
+    send_email(
+        to=to,
+        subject="Your Sign-in Code",
+        body=_two_factor_code_email_html(first_name, code),
+    )

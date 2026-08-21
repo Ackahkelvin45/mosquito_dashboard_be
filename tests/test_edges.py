@@ -93,6 +93,27 @@ class TestRepositoryEdges:
             NotificationPreference.user_id == user.id
         ).count() == 1
 
+    def test_http_ingest_stamps_liveness_heartbeat(self, db_session, make_device):
+        """The REST ingest path (POST /devices/uuid/{uuid}/sensor-readings)
+        must stamp last_sensor_data_at exactly like the MQTT path — a device
+        reporting over HTTP is just as alive."""
+        from datetime import timedelta
+
+        from app.device.repository.device_repository import DeviceRepository
+        from app.device.schema import SensorDataPayload
+
+        stale = datetime.utcnow() - timedelta(hours=2)
+        device = make_device(last_activity=stale, last_sensor_data_at=stale)
+        DeviceRepository(db_session).create_sensor_reading(
+            device,
+            SensorDataPayload(
+                timestamp=datetime.utcnow(), temp_external=30.0, temp_internal=28.0,
+                humidity_external=70.0, humidity_internal=50.0,
+                pressure_internal=1010.0, pressure_external=1009.0, battery=3.9,
+            ),
+        )
+        assert (datetime.utcnow() - device.last_sensor_data_at).total_seconds() < 5
+
     def test_list_failed_selects_under_cap(self, db_session, make_user,
                                            make_notification):
         from app.notification.models import NotificationDelivery

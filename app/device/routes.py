@@ -1,14 +1,16 @@
 from fastapi import APIRouter, Depends, Query, BackgroundTasks, HTTPException
 from fastapi.security import HTTPBearer
-from app.device.models import Device
+from app.device.models import Device, UnregisteredDeviceSighting
 from app.device.schema import (
     DeviceCreate, DeviceResponse, DeviceUpdate,
     DeviceClusterCreate, DeviceClusterResponse, DeviceClusterUpdate,
     MosquitoEventPayload, SensorDataPayload, SensorDataResponse,
-    SensorReadingWithDeviceResponse,
+    SensorReadingWithDeviceResponse, UnregisteredSightingResponse,
     MosquitoIndividualPayload, MosquitoIndividualResponse, MosquitoEventResponse,
 )
 from app.device.chart_schema import DeviceChartsResponse
+from app.audit.models import AuditAction
+from app.audit.recorder import audit
 from app.core.database import get_db
 from app.core.pagination import Page
 from sqlalchemy.orm import Session
@@ -39,7 +41,11 @@ def create_device(device_data: DeviceCreate, session: Session = Depends(get_db),
                   current_user: UserResponse = Depends(require_super_admin)):
     # Only a super admin registers devices.
     try:
-        return DeviceService(session).create_device(device_data)
+        created = DeviceService(session).create_device(device_data)
+        audit(session, AuditAction.DEVICE_CREATED, actor_user_id=current_user.id,
+              actor_email=current_user.email, target_type="device", target_id=created.id,
+              detail={"name": created.name, "device_uuid": created.device_uuid})
+        return created
     except Exception as e:
         raise e
 
@@ -89,7 +95,11 @@ def update_device(device_id: int, device_data: DeviceUpdate, session: Session = 
         existing = DeviceService(session).get_device_by_id(device_id, allowed_cluster_ids=allowed)
         if not is_super_admin(current_user) and existing.cluster_id != current_user.cluster_id:
             raise HTTPException(status_code=403, detail="You can only edit devices in your own cluster")
-        return DeviceService(session).update_device(device_id, device_data)
+        updated = DeviceService(session).update_device(device_id, device_data)
+        audit(session, AuditAction.DEVICE_UPDATED, actor_user_id=current_user.id,
+              actor_email=current_user.email, target_type="device", target_id=device_id,
+              detail={"fields": sorted(device_data.model_fields_set)})
+        return updated
     except Exception as e:
         raise e
 
@@ -99,6 +109,8 @@ def delete_device(device_id: int, session: Session = Depends(get_db),
                   current_user: UserResponse = Depends(require_super_admin)):
     try:
         DeviceService(session).delete_device(device_id)
+        audit(session, AuditAction.DEVICE_DELETED, actor_user_id=current_user.id,
+              actor_email=current_user.email, target_type="device", target_id=device_id)
     except Exception as e:
         raise e
 
@@ -123,7 +135,11 @@ def get_clusters(
 def create_cluster(cluster_data: DeviceClusterCreate, session: Session = Depends(get_db),
                    current_user: UserResponse = Depends(require_super_admin)):
     try:
-        return DeviceClusterService(session).create_cluster(cluster_data)
+        created = DeviceClusterService(session).create_cluster(cluster_data)
+        audit(session, AuditAction.CLUSTER_CREATED, actor_user_id=current_user.id,
+              actor_email=current_user.email, target_type="cluster", target_id=created.id,
+              detail={"name": created.name, "public": created.public})
+        return created
     except Exception as e:
         raise e
 
@@ -144,7 +160,11 @@ def get_cluster_by_id(cluster_id: int, session: Session = Depends(get_db),
 def update_cluster(cluster_id: int, cluster_data: DeviceClusterUpdate, session: Session = Depends(get_db),
                    current_user: UserResponse = Depends(require_super_admin)):
     try:
-        return DeviceClusterService(session).update_cluster(cluster_id, cluster_data)
+        updated = DeviceClusterService(session).update_cluster(cluster_id, cluster_data)
+        audit(session, AuditAction.CLUSTER_UPDATED, actor_user_id=current_user.id,
+              actor_email=current_user.email, target_type="cluster", target_id=cluster_id,
+              detail={"fields": sorted(cluster_data.model_fields_set)})
+        return updated
     except Exception as e:
         raise e
 
@@ -154,6 +174,8 @@ def delete_cluster(cluster_id: int, session: Session = Depends(get_db),
                    current_user: UserResponse = Depends(require_super_admin)):
     try:
         DeviceClusterService(session).delete_cluster(cluster_id)
+        audit(session, AuditAction.CLUSTER_DELETED, actor_user_id=current_user.id,
+              actor_email=current_user.email, target_type="cluster", target_id=cluster_id)
     except Exception as e:
         raise e
 
@@ -269,8 +291,57 @@ def delete_mosquito_event(device_uuid: str, event_id: int, session: Session = De
     try:
         allowed = visible_cluster_ids(session, current_user)
         DeviceService(session).delete_mosquito_event(device_uuid=device_uuid, event_id=event_id, allowed_cluster_ids=allowed)
+        audit(session, AuditAction.MOSQUITO_EVENT_DELETED, actor_user_id=current_user.id,
+              actor_email=current_user.email, target_type="mosquito_event", target_id=event_id,
+              detail={"device_uuid": device_uuid})
     except Exception as e:
         raise e
+
+
+# ── Unregistered sightings (TODO.md §1) ──────────────────────────────────────
+# Registered BEFORE the /{device_id} routes: "unregistered" must never be
+# swallowed by the int path parameter (it would 422, not fall through).
+
+@router.get("/unregistered", status_code=status.HTTP_200_OK,
+            response_model=Page[UnregisteredSightingResponse])
+def list_unregistered_sightings(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    session: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_super_admin),
+):
+    """UUIDs currently publishing MQTT data with no registered device —
+    only super admins can act on them (registration is super-admin-only)."""
+    q = (session.query(UnregisteredDeviceSighting)
+         .order_by(UnregisteredDeviceSighting.last_seen.desc()))
+    total = q.count()
+    rows = q.offset((page - 1) * page_size).limit(page_size).all()
+    total_pages = (total + page_size - 1) // page_size if page_size else 0
+    return Page(
+        items=[UnregisteredSightingResponse.model_validate(r) for r in rows],
+        total=total, page=page, page_size=page_size, total_pages=total_pages,
+    )
+
+
+@router.delete("/unregistered/{device_uuid}", status_code=status.HTTP_204_NO_CONTENT)
+def dismiss_unregistered_sighting(
+    device_uuid: str,
+    session: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_super_admin),
+):
+    """Dismiss a stray UUID (e.g. a neighbour's test device). It will
+    reappear if it keeps publishing — deliberate: an unhandled publisher
+    should keep nagging, not vanish forever."""
+    deleted = (
+        session.query(UnregisteredDeviceSighting)
+        .filter(UnregisteredDeviceSighting.device_uuid == device_uuid)
+        .delete(synchronize_session=False)
+    )
+    session.commit()
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Sighting not found")
+    audit(session, AuditAction.SIGHTING_DISMISSED, actor_user_id=current_user.id,
+          actor_email=current_user.email, target_type="sighting", target_id=device_uuid)
 
 
 # ── Per-device charts ────────────────────────────────────────────────────────

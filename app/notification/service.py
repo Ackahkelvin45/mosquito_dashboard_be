@@ -55,9 +55,13 @@ logger = logging.getLogger(__name__)
 # Preference toggle -> the notification types it suppresses. in_app_enabled is
 # the master switch (checked separately); push/email gate dispatch only.
 PREFERENCE_GATES: dict[str, set[NotificationType]] = {
-    "species_alerts": {
-        NotificationType.SPECIES_DETECTED,
-        NotificationType.ACTIVITY_SURGE,
+    "species_alerts": {NotificationType.SPECIES_DETECTED},
+    # Split from species_alerts (FR-18): surge has a personal threshold, so it
+    # needs its own on/off switch to stay coherent in the settings UI.
+    "surge_alerts": {NotificationType.ACTIVITY_SURGE},
+    "environment_alerts": {
+        NotificationType.EXTREME_TEMPERATURE,
+        NotificationType.EXTREME_HUMIDITY,
     },
     "battery_alerts": {NotificationType.LOW_BATTERY},
     "offline_alerts": {
@@ -85,6 +89,8 @@ EMAIL_AUTO_TYPES = {NotificationType.DAILY_SUMMARY, NotificationType.WEEKLY_SUMM
 # path so it never has to INSERT preference rows on the MQTT hot path.
 _DEFAULT_PREFERENCES = SimpleNamespace(
     species_alerts=True,
+    surge_alerts=True,
+    environment_alerts=True,
     battery_alerts=True,
     offline_alerts=True,
     admin_alerts=True,
@@ -92,7 +98,24 @@ _DEFAULT_PREFERENCES = SimpleNamespace(
     email_enabled=False,
     push_enabled=True,
     in_app_enabled=True,
+    # Personal thresholds: None = use global. MUST mirror the model or the
+    # fan-out loop AttributeErrors for row-less users (and emit swallows it).
+    personal_temp_max=None,
+    personal_humidity_max=None,
+    personal_battery_min_v=None,
+    personal_surge_threshold=None,
 )
+
+# measured-metric key -> (preference field, breach test). Filter-only: a
+# recipient with a personal value is dropped unless THEIR bar is crossed too.
+# Keys are deliberately one-sided (e.g. temperature_high) — low-side breaches
+# always deliver per the global rule.
+_PERSONAL_THRESHOLD_FIELDS: dict[str, tuple[str, str]] = {
+    "temperature_high": ("personal_temp_max", "above"),
+    "humidity_high": ("personal_humidity_max", "above"),
+    "battery_v": ("personal_battery_min_v", "below"),
+    "surge_count": ("personal_surge_threshold", "above"),
+}
 
 
 class NotificationService:
@@ -124,6 +147,7 @@ class NotificationService:
         expires_at: Optional[datetime] = None,
         scheduled_for: Optional[datetime] = None,
         channels: bool = True,
+        measured: Optional[dict] = None,
     ) -> Optional[NotificationResponse]:
         """Create one notification for one user, respecting dedupe + prefs.
 
@@ -138,6 +162,8 @@ class NotificationService:
 
         preferences = self.preference_repository.get_or_create(user_id)
         if not self._allowed_by_preferences(preferences, notification_type):
+            return None
+        if not self._passes_personal_thresholds(preferences, measured):
             return None
 
         notification = self.notification_repository.create(
@@ -188,6 +214,7 @@ class NotificationService:
         expires_at: Optional[datetime] = None,
         scheduled_for: Optional[datetime] = None,
         channels: bool = True,
+        measured: Optional[dict] = None,
     ) -> int:
         """Fan one event out to many recipients: single dedupe check, per-user
         preference filtering, one bulk INSERT/commit. Returns rows created."""
@@ -209,6 +236,8 @@ class NotificationService:
         for user_id in unique_user_ids:
             preferences = preferences_by_user.get(user_id, _DEFAULT_PREFERENCES)
             if not self._allowed_by_preferences(preferences, notification_type):
+                continue
+            if not self._passes_personal_thresholds(preferences, measured):
                 continue
             rows.append(
                 Notification(
@@ -381,10 +410,52 @@ class NotificationService:
     def update_preferences(
         self, user_id: int, data: NotificationPreferenceUpdate
     ) -> NotificationPreferenceResponse:
-        preference = self.preference_repository.update_preferences(
-            user_id, **data.model_dump(exclude_unset=True)
-        )
+        fields = data.model_dump(exclude_unset=True)
+        self._validate_personal_thresholds(fields)
+        preference = self.preference_repository.update_preferences(user_id, **fields)
         return NotificationPreferenceResponse.model_validate(preference)
+
+    def _validate_personal_thresholds(self, fields: dict) -> None:
+        """Personal thresholds are filter-only: they may only RAISE the bar
+        relative to the global setting, never lower it (a tighter-than-global
+        value could never fire — the global gate wouldn't have emitted)."""
+        from app.notification.alert_settings import get_thresholds
+        limits = get_thresholds(self.session)
+        checks = [
+            ("personal_temp_max", limits.temp_max, "≥", lambda v, g: v >= g,
+             f"must be ≥ the system temperature threshold ({limits.temp_max:g}°C)"),
+            ("personal_humidity_max", limits.humidity_max, "≥", lambda v, g: v >= g,
+             f"must be ≥ the system humidity threshold ({limits.humidity_max:g}%)"),
+            ("personal_battery_min_v", limits.battery_critical_v, "≤", lambda v, g: v <= g,
+             f"must be ≤ the system battery threshold ({limits.battery_critical_v:g}V)"),
+            ("personal_surge_threshold", limits.surge_threshold, "≥", lambda v, g: v >= g,
+             f"must be ≥ the system surge threshold ({limits.surge_threshold})"),
+        ]
+        for field, global_value, _, ok, message in checks:
+            value = fields.get(field)
+            if value is not None and not ok(value, global_value):
+                raise HTTPException(status_code=422, detail=f"{field} {message}")
+
+    @staticmethod
+    def _passes_personal_thresholds(preferences, measured: Optional[dict]) -> bool:
+        """Filter-only personal thresholds (FR-18 Phase B): a recipient with a
+        personal value set is skipped unless the measured value crosses THEIR
+        bar too. No personal value (or no measured context) = deliver."""
+        if not measured:
+            return True
+        for metric, value in measured.items():
+            mapping = _PERSONAL_THRESHOLD_FIELDS.get(metric)
+            if mapping is None or value is None:
+                continue
+            field, direction = mapping
+            personal = getattr(preferences, field, None)
+            if personal is None:
+                continue
+            if direction == "above" and not value > personal:
+                return False
+            if direction == "below" and not value < personal:
+                return False
+        return True
 
     @staticmethod
     def _allowed_by_preferences(preferences, notification_type: NotificationType) -> bool:
