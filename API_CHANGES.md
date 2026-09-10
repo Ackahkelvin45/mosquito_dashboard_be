@@ -944,6 +944,35 @@ Migration: `alembic/versions/b4c5d6e7f8a9_add_spec_gap_features.py` (`alembic up
 
 ---
 
+## 15. Dashboard: new hourly-activity chart; region chart moved to a full row
+
+`GET /dashboard` gains a **`hourly_activity`** section (own `hourly_group_by`
+param, `day|month|year`, default `month`, honours the shared custom
+date-range override): every detection in the window binned by the **hour of
+day it started** (`detection_timestamp`, UTC), aggregated across days —
+the diel-activity profile used for intervention timing.
+
+```jsonc
+"hourly_activity": {
+  "genera": ["aedes", "anopheles"],
+  "data": [ { "hour": 18, "label": "18:00", "total": 3,
+              "by_genus": { "aedes": 2, "anopheles": 1 } }, ... ],  // always 24 bins
+  "total": 4,
+  "peak_hour": 18,
+  "group_by": "month", "window_start": "...", "window_end": "..."
+}
+```
+
+- Test-mode events are **excluded** (note: the older chart sections do not
+  yet exclude them — pre-existing inconsistency, flagged for follow-up).
+- Cluster scoping identical to every other section.
+- Frontend: new "Mosquito Activity by Time of Day" chart (stacked by genus,
+  fixed CVD-validated genus colors) takes the half-width slot next to Sensor
+  Status; **Mosquito by Region moved to its own full-width row**. Both are in
+  the dashboard CSV/PDF export.
+
+---
+
 ## Files changed (summary)
 
 | Area | Files |

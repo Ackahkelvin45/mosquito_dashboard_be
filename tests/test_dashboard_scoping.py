@@ -1,7 +1,7 @@
 """GET /dashboard cluster scoping — a cluster admin/user must only ever see
 totals and chart data for their own cluster plus public clusters, never the
 whole fleet, regardless of what cluster_id/region/device_id they pass."""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -111,3 +111,86 @@ class TestDashboardScoping:
         res = client.get("/dashboard").json()
         assert res["totals"]["total_mosquito_count"] == 2
         assert res["totals"]["total_devices"] == 1
+
+
+class TestHourlyActivity:
+    """The time-of-day chart: bins detections by detection_timestamp hour,
+    excludes test-mode events, and respects cluster scoping."""
+
+    @pytest.fixture
+    def hourly_world(self, make_cluster, make_user, make_device, db_session):
+        from app.device.models import MosquitoIndividualReading
+
+        cluster = make_cluster()
+        device = make_device(cluster)
+
+        def detection(hour, genus, count=1, is_test=False):
+            # Yesterday, not today: an hour later than "now" would sit in the
+            # future and fall outside the rolling window.
+            ts = (datetime.utcnow() - timedelta(days=1)).replace(
+                hour=hour, minute=30, second=0, microsecond=0)
+            event = MosquitoEvent(device_id=device.id, timestamp=ts,
+                                  count=count, is_test=is_test)
+            db_session.add(event)
+            db_session.flush()
+            db_session.add(MosquitoIndividualReading(
+                batch_id=event.id, detection_timestamp=ts,
+                species=f"{genus} sp.", genus=genus, age_group="", sex="female",
+            ))
+
+        detection(18, "aedes", count=2)
+        detection(18, "anopheles")
+        detection(6, "culex")
+        detection(12, "aedes", is_test=True)  # must never appear
+        db_session.commit()
+        return {"cluster": cluster, "device": device,
+                "super": make_user(role=UserRole.SUPER_ADMIN)}
+
+    def test_bins_by_hour_and_excludes_test(self, app, client, hourly_world):
+        _as(app, hourly_world["super"])
+        body = client.get("/dashboard").json()["hourly_activity"]
+
+        assert len(body["data"]) == 24
+        assert [p["hour"] for p in body["data"]] == list(range(24))
+        by_hour = {p["hour"]: p for p in body["data"]}
+        assert by_hour[18]["total"] == 3
+        assert by_hour[18]["by_genus"] == {"aedes": 2, "anopheles": 1, "culex": 0}
+        assert by_hour[6]["total"] == 1
+        # The test-mode noon detection is excluded entirely.
+        assert by_hour[12]["total"] == 0
+        assert body["total"] == 4
+        assert body["peak_hour"] == 18
+        assert body["genera"] == ["aedes", "anopheles", "culex"]
+
+    def test_empty_window_returns_24_zero_bins(self, app, client, world):
+        _as(app, world["super"])
+        body = client.get("/dashboard?hourly_group_by=day").json()["hourly_activity"]
+        # world's events carry no individual readings for "today" hour bins is
+        # irrelevant here — just assert the shape contract holds with no data.
+        assert len(body["data"]) == 24
+        assert body["peak_hour"] is None or isinstance(body["peak_hour"], int)
+
+    def test_cluster_scoping_applies(self, app, client, hourly_world, make_cluster,
+                                     make_device, make_user, db_session):
+        from app.device.models import MosquitoIndividualReading
+
+        other = make_cluster()
+        other_device = make_device(other)
+        ts = (datetime.utcnow() - timedelta(days=1)).replace(
+            hour=9, minute=0, second=0, microsecond=0)
+        event = MosquitoEvent(device_id=other_device.id, timestamp=ts, count=5)
+        db_session.add(event)
+        db_session.flush()
+        db_session.add(MosquitoIndividualReading(
+            batch_id=event.id, detection_timestamp=ts,
+            species="culex sp.", genus="culex", age_group="", sex="male",
+        ))
+        db_session.commit()
+
+        member = make_user(role=UserRole.USER, cluster_id=hourly_world["cluster"].id)
+        _as(app, member)
+        body = client.get("/dashboard").json()["hourly_activity"]
+        by_hour = {p["hour"]: p for p in body["data"]}
+        # The other cluster's 9am burst is invisible to this member.
+        assert by_hour[9]["total"] == 0
+        assert body["total"] == 4

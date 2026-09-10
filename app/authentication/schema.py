@@ -99,6 +99,31 @@ class TwoFactorToggleRequest(BaseModel):
                                   description="Re-proven so a hijacked session can't flip the second factor")
 
 
+class ProfileUpdateRequest(BaseModel):
+    """Self-service profile edit — names only. Email/role/cluster are
+    deliberately excluded: email changes are an account-takeover primitive
+    and the rest is admin territory (PATCH /auth/users/{id})."""
+    first_name: Optional[str] = Field(None, min_length=2, max_length=50)
+    last_name: Optional[str] = Field(None, min_length=2, max_length=50)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=8, max_length=50)
+    new_password: str = Field(..., min_length=8, max_length=50)
+
+    # Same policy as registration and OTP reset — one rule everywhere.
+    @field_validator("new_password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if not any(char.isdigit() for char in value):
+            raise ValueError("Password must contain at least one number")
+        if not any(char.isalpha() for char in value):
+            raise ValueError("Password must contain at least one letter")
+        if not any(char.isupper() for char in value):
+            raise ValueError("Password must contain at least one uppercase letter")
+        return value
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(..., description="The refresh token (in the body — never the query string, which lands in server logs)")
 

@@ -290,6 +290,51 @@ class UserService:
         return {"two_factor_enabled": user.two_factor_enabled,
                 "reauth_required": reauth_required}
 
+    def update_me(self, user_id: int, first_name: str | None, last_name: str | None,
+                  ip: str | None = None) -> UserResponse:
+        """Self-service profile edit (names only — see ProfileUpdateRequest)."""
+        user = self.user_repository.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        changed = {}
+        if first_name is not None and first_name != user.first_name:
+            changed["first_name"] = {"from": user.first_name, "to": first_name}
+            user.first_name = first_name
+        if last_name is not None and last_name != user.last_name:
+            changed["last_name"] = {"from": user.last_name, "to": last_name}
+            user.last_name = last_name
+        self.session.commit()
+        self.session.refresh(user)
+        if changed:
+            audit(self.session, AuditAction.PROFILE_UPDATED,
+                  actor_user_id=user.id, actor_email=user.email,
+                  target_type="user", target_id=user.id,
+                  detail={"changed": changed}, ip=ip)
+        return UserResponse.model_validate(user)
+
+    def change_password(self, user_id: int, current_password: str,
+                        new_password: str, ip: str | None = None) -> dict:
+        """Self-service password change: re-proves the current password, then
+        invalidates every existing session (token_version bump) — the caller
+        must sign in again with the new password."""
+        user = self.user_repository.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not self.hash_helper.verify_password(password=current_password,
+                                                hashed_password=user.hashed_password):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        if current_password == new_password:
+            raise HTTPException(status_code=422,
+                                detail="New password must be different from the current one")
+        self.user_repository.update_password(user, self.hash_helper.hash_password(new_password))
+        user.token_version = int(user.token_version or 0) + 1
+        self.session.commit()
+        audit(self.session, AuditAction.PASSWORD_CHANGED,
+              actor_user_id=user.id, actor_email=user.email,
+              target_type="user", target_id=user.id, ip=ip)
+        return {"message": "Password changed. Please sign in again.",
+                "reauth_required": True}
+
     def refresh_token(self, refresh_token: str) -> UserLoginResponse:
         payload = self.auth_handler.verify_token_payload(refresh_token, expected_type="refresh")
         user = self.user_repository.get_user_by_id(int(payload["sub"]))

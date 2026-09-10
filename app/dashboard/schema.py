@@ -196,6 +196,30 @@ class DashboardGenusHeatmap(BaseModel):
     window_end: datetime = Field(..., description="Window end (UTC)")
 
 
+class HourlyActivityPoint(BaseModel):
+    """One hour-of-day bin (0-23) with per-genus detection counts."""
+    hour: int = Field(..., description="Hour of day, 0-23 (UTC)")
+    label: str = Field(..., description="Display label, e.g. '18:00'")
+    total: int = Field(..., description="Total detections in this hour across the window")
+    by_genus: dict[str, int] = Field(default={}, description="Detections per genus for this hour")
+
+
+class DashboardHourlyActivity(BaseModel):
+    """
+    Mosquito activity by time of day: every detection in the window is binned
+    by the HOUR it started (detection_timestamp, UTC), aggregated across days.
+    Always exactly 24 points, zeros included. Answers "when are the mosquitoes
+    active?" — the intervention-timing view (dusk/dawn peaks etc.).
+    """
+    genera: List[str] = Field(default=[], description="Distinct genera present, fixed display order")
+    data: List[HourlyActivityPoint] = Field(default=[], description="24 hour bins, 00:00-23:00")
+    total: int = Field(0, description="Total detections in the window")
+    peak_hour: Optional[int] = Field(None, description="Hour with the most detections (null when no data)")
+    group_by: str = Field(..., description="Rolling window applied")
+    window_start: datetime = Field(..., description="Window start (UTC)")
+    window_end: datetime = Field(..., description="Window end (UTC)")
+
+
 class DashboardResponse(BaseModel):
     """Unified dashboard — totals and chart each have their own independent window."""
     totals: DashboardTotals
@@ -206,6 +230,7 @@ class DashboardResponse(BaseModel):
     breakdown: DashboardBreakdown
     correlation_chart: DashboardCorrelationChart
     genus_heatmap: DashboardGenusHeatmap
+    hourly_activity: DashboardHourlyActivity
     # Device filters echoed back
     region: Optional[str] = Field(None, description="Region filter applied")
     cluster_id: Optional[List[int]] = Field(None, description="Cluster filter applied")

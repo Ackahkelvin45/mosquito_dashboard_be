@@ -7,7 +7,7 @@ from app.audit.models import AuditAction
 from app.audit.recorder import audit
 from app.authentication.models import User
 from app.core.pagination import Page
-from app.authentication.schema import UserCreate, UserLogin, UserLogout, UserResponse, UserUpdate,UserLoginResponse,ResearcherRequestCreate,ResearcherRequestResponse,UpdateResearcherRequest,ForgotPasswordRequest,VerifyOTPRequest,ResetPasswordRequest,MessageResponse,TwoFactorChallengeResponse,TwoFactorVerifyRequest,TwoFactorResendRequest,TwoFactorToggleRequest,RefreshRequest
+from app.authentication.schema import UserCreate, UserLogin, UserLogout, UserResponse, UserUpdate,UserLoginResponse,ResearcherRequestCreate,ResearcherRequestResponse,UpdateResearcherRequest,ForgotPasswordRequest,VerifyOTPRequest,ResetPasswordRequest,MessageResponse,TwoFactorChallengeResponse,TwoFactorVerifyRequest,TwoFactorResendRequest,TwoFactorToggleRequest,RefreshRequest,ProfileUpdateRequest,ChangePasswordRequest
 from app.core.database import get_db
 from sqlalchemy.orm import Session
 from app.service.email_service import send_welcome_email,send_researcher_request_email,send_researcher_approved_email,send_researcher_declined_email,send_password_reset_otp_email
@@ -67,6 +67,33 @@ def resend_two_factor(resend_details: TwoFactorResendRequest, request: Request,
         result = UserService(session).resend_two_factor(
             resend_details.two_factor_token, ip=_client_ip(request))
         return MessageResponse(message=result["message"])
+    except Exception as e:
+        raise e
+
+
+@router.patch("/me",status_code=status.HTTP_200_OK,response_model=UserResponse)
+def update_me(profile: ProfileUpdateRequest, request: Request,
+              session: Session = Depends(get_db),
+              current_user: UserResponse = Depends(get_current_user)):
+    """Self-service profile edit — first/last name only (the Profile page)."""
+    try:
+        return UserService(session).update_me(
+            current_user.id, profile.first_name, profile.last_name,
+            ip=_client_ip(request))
+    except Exception as e:
+        raise e
+
+
+@router.post("/me/change-password",status_code=status.HTTP_200_OK)
+def change_password(change: ChangePasswordRequest, request: Request,
+                    session: Session = Depends(get_db),
+                    current_user: UserResponse = Depends(get_current_user)):
+    """Change the caller's own password (current password re-proven).
+    Invalidates every existing session — the client must sign in again."""
+    try:
+        return UserService(session).change_password(
+            current_user.id, change.current_password, change.new_password,
+            ip=_client_ip(request))
     except Exception as e:
         raise e
 

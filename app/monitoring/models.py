@@ -44,7 +44,7 @@ class MqttIngestError(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     # "invalid_payload" | "malformed_topic" | "unknown_device" |
-    # "handler_error" | "broker_disconnected"
+    # "handler_error" | "broker_disconnected" | "empty_reading"
     error_type: Mapped[str] = mapped_column(String(30), index=True)
     topic: Mapped[str | None] = mapped_column(String(255), nullable=True)
     device_uuid: Mapped[str | None] = mapped_column(String(100), nullable=True)

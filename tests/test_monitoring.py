@@ -120,6 +120,38 @@ class TestIngestInstrumentation:
         _publish("nope", _sensor_payload())
         assert db_session.query(MqttIngestError).one().error_type == "malformed_topic"
 
+    def test_all_null_reading_captures_raw_payload(self, db_session, super_admin,
+                                                   make_device):
+        """A payload whose keys match nothing produces an all-NULL reading —
+        the raw JSON must land in the error feed so it can be diagnosed
+        (the 02-Aug AI4PEP all-dash rows scenario)."""
+        device = make_device()
+        _publish(f"mosquito_dashboard/{device.device_uuid}/sensor_data",
+                 {"temperature_c": 27.5, "hum": 60, "batt_mv": 3900})
+        row = db_session.query(MqttIngestError).filter(
+            MqttIngestError.error_type == "empty_reading").one()
+        assert row.device_uuid == device.device_uuid
+        assert "temperature_c" in row.detail  # the offending payload is kept
+        # The empty reading itself is still stored (nulls preserved).
+        from app.device.models import SensorDeviceReading
+        assert db_session.query(SensorDeviceReading).count() == 1
+
+    def test_normal_reading_not_flagged_empty(self, db_session, super_admin,
+                                              make_device):
+        device = make_device()
+        _publish(f"mosquito_dashboard/{device.device_uuid}/sensor_data",
+                 _sensor_payload())
+        assert db_session.query(MqttIngestError).filter(
+            MqttIngestError.error_type == "empty_reading").count() == 0
+
+    def test_empty_reading_captured_in_test_mode_too(self, db_session,
+                                                     super_admin, make_device):
+        device = make_device()
+        _publish(f"mosquito_dashboard/{device.device_uuid}/sensor_data_test",
+                 {"foo": 1})
+        assert db_session.query(MqttIngestError).filter(
+            MqttIngestError.error_type == "empty_reading").count() == 1
+
     def test_handler_crash_logged_not_raised(self, db_session, super_admin,
                                              make_device, monkeypatch):
         device = make_device()

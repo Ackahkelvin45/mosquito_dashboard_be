@@ -147,6 +147,28 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
         f"Sensor reading saved for device {device.device_uuid}"
         + (" [TEST — no notifications]" if is_test else "")
     )
+
+    all_fields_empty = all(v is None for v in (
+        reading.external_temperature, reading.internal_temperature,
+        reading.external_humidity, reading.internal_humidity,
+        reading.internal_pressure, reading.external_pressure,
+        reading.external_light, reading.battery_voltage,
+    ))
+    if all_fields_empty:
+        # Every field came back NULL — almost always a payload whose KEYS
+        # don't match the schema (firmware variant), not a device with no
+        # sensors. Keep the raw payload in the System Health error feed so
+        # the offending JSON is diagnosable after the fact; registered
+        # devices' payloads are not stored anywhere else. Captured for test
+        # mode too — a mis-shaped payload matters either way.
+        try:
+            payload_snippet = json.dumps(data)[:500]
+        except (TypeError, ValueError):
+            payload_snippet = str(data)[:500]
+        recorder.record_error(db, "empty_reading",
+                              device_uuid=device.device_uuid,
+                              detail=payload_snippet)
+
     if is_test:
         return
 
@@ -167,12 +189,7 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
         else reading.internal_humidity
     )
     emit(db, NotificationEvent.EXTREME_HUMIDITY, device=device, humidity=humidity)
-    if all(v is None for v in (
-        reading.external_temperature, reading.internal_temperature,
-        reading.external_humidity, reading.internal_humidity,
-        reading.internal_pressure, reading.external_pressure,
-        reading.external_light, reading.battery_voltage,
-    )):
+    if all_fields_empty:
         emit(db, NotificationEvent.SENSOR_MALFUNCTION, device=device,
              reason="all sensor fields were empty")
 

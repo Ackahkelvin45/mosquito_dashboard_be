@@ -22,6 +22,8 @@ from app.dashboard.schema import (
     CorrelationDataPoint,
     DashboardCorrelationChart,
     GenusHeatmapCell,
+    HourlyActivityPoint,
+    DashboardHourlyActivity,
     DashboardGenusHeatmap,
 )
 
@@ -83,6 +85,7 @@ class DashboardService:
         breakdown_group_by: str = "month",
         correlation_group_by: str = "month",
         genus_heatmap_group_by: str = "month",
+        hourly_group_by: str = "month",
         region: Optional[str] = None,
         cluster_id: Optional[List[int]] = None,
         device_id: Optional[int] = None,
@@ -110,6 +113,7 @@ class DashboardService:
         breakdown_group_by = breakdown_group_by.lower() if breakdown_group_by in VALID_GROUP_BY else "month"
         correlation_group_by = correlation_group_by.lower() if correlation_group_by in VALID_GROUP_BY else "month"
         genus_heatmap_group_by = genus_heatmap_group_by.lower() if genus_heatmap_group_by in VALID_GROUP_BY else "month"
+        hourly_group_by = hourly_group_by.lower() if hourly_group_by in VALID_GROUP_BY else "month"
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -182,6 +186,10 @@ class DashboardService:
         gh_start, gh_end, gh_gb = section_window(genus_heatmap_group_by)
         genus_heatmap = self._compute_genus_heatmap(scoped_ids, gh_start, gh_end, gh_gb)
 
+        # ── Hourly Activity (own window) ────────────────────────────────
+        h_start, h_end, h_gb = section_window(hourly_group_by)
+        hourly_activity = self._compute_hourly_activity(scoped_ids, h_start, h_end, h_gb)
+
         return DashboardResponse(
             totals=totals,
             chart=chart,
@@ -191,6 +199,7 @@ class DashboardService:
             breakdown=breakdown,
             correlation_chart=correlation_chart,
             genus_heatmap=genus_heatmap,
+            hourly_activity=hourly_activity,
             region=region,
             cluster_id=cluster_id,
             device_id=device_id,
@@ -751,6 +760,75 @@ class DashboardService:
             genera=ordered_genera,
             buckets=[ts.strftime(label_fmt) for ts in bucket_list],
             data=cells,
+            group_by=group_by,
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+    # ── Hourly activity ──────────────────────────────────────────────────────
+
+    def _compute_hourly_activity(
+        self,
+        device_ids: Optional[list[int]],
+        window_start: datetime,
+        window_end: datetime,
+        group_by: str,
+    ) -> DashboardHourlyActivity:
+        """Detections binned by the HOUR OF DAY they started, aggregated
+        across the whole window — the diel-activity profile (vector activity
+        peaks at dusk/dawn are what intervention timing is planned around).
+
+        Bins on MosquitoIndividualReading.detection_timestamp (event START —
+        the biologically meaningful instant) and excludes test-mode events,
+        which are technician connectivity checks, not surveillance data.
+        Hours are UTC, matching every other timestamp in the system.
+        """
+        q = (
+            self.session.query(
+                func.coalesce(MosquitoIndividualReading.genus, "Unknown"),
+                MosquitoIndividualReading.detection_timestamp,
+                MosquitoEvent.count,
+            )
+            .join(MosquitoEvent, MosquitoEvent.id == MosquitoIndividualReading.batch_id)
+            .filter(
+                MosquitoEvent.timestamp >= window_start,
+                MosquitoEvent.timestamp <= window_end,
+                MosquitoEvent.is_test.is_(False),
+            )
+        )
+        if device_ids is not None:
+            q = q.filter(MosquitoEvent.device_id.in_(device_ids))
+
+        per_hour_genus: dict[tuple[int, str], int] = {}
+        genera: set[str] = set()
+        for genus, detected_at, count in q.all():
+            genus = (str(genus).strip() or "Unknown").lower()
+            ts = detected_at
+            if ts is None:
+                continue
+            hour = (ts.replace(tzinfo=None) if ts.tzinfo else ts).hour
+            genera.add(genus)
+            per_hour_genus[(hour, genus)] = per_hour_genus.get((hour, genus), 0) + (count or 0)
+
+        ordered_genera = sorted(genera)
+        points: list[HourlyActivityPoint] = []
+        for hour in range(24):
+            by_genus = {g: per_hour_genus.get((hour, g), 0) for g in ordered_genera}
+            points.append(HourlyActivityPoint(
+                hour=hour,
+                label=f"{hour:02d}:00",
+                total=sum(by_genus.values()),
+                by_genus=by_genus,
+            ))
+
+        total = sum(p.total for p in points)
+        peak_hour = max(points, key=lambda p: p.total).hour if total > 0 else None
+
+        return DashboardHourlyActivity(
+            genera=ordered_genera,
+            data=points,
+            total=total,
+            peak_hour=peak_hour,
             group_by=group_by,
             window_start=window_start,
             window_end=window_end,

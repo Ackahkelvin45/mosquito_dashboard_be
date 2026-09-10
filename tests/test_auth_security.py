@@ -269,3 +269,63 @@ class TestAuditEndpoint:
         assert only["items"][0]["actor_email"] == "b@x.com"
         assert set(client.get("/audit-logs/actions").json()) >= {
             "LOGIN_FAILED", "DEVICE_CREATED", "ALERT_SETTINGS_UPDATED"}
+
+
+class TestSelfServiceProfile:
+    """PATCH /auth/me (names only) and POST /auth/me/change-password."""
+
+    def _token(self, client, email):
+        return _login(client, email).json()["access_token"]
+
+    def test_update_me_changes_names_and_audits(self, client, db_session, make_user):
+        user = make_user(password=PASSWORD)
+        token = self._token(client, user.email)
+        res = client.patch("/auth/me",
+                           json={"first_name": "Kwame", "last_name": "Mensah"},
+                           headers={"Authorization": f"Bearer {token}"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["first_name"] == "Kwame" and body["last_name"] == "Mensah"
+        assert AuditAction.PROFILE_UPDATED in _actions(db_session)
+        # Email/role are not part of the contract — extra keys are ignored by
+        # the schema, never applied.
+        res = client.patch("/auth/me",
+                           json={"email": "evil@x.com", "role": "SUPER_ADMIN"},
+                           headers={"Authorization": f"Bearer {token}"})
+        assert res.status_code == 200
+        assert res.json()["email"] == user.email
+        assert res.json()["role"] == "USER"
+
+    def test_change_password_requires_current_and_kills_sessions(self, client,
+                                                                 db_session, make_user):
+        user = make_user(password=PASSWORD)
+        tokens = _login(client, user.email).json()
+        headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+        # Wrong current password → rejected.
+        res = client.post("/auth/me/change-password",
+                          json={"current_password": "wrong-pass-123A",
+                                "new_password": "NewPass123"},
+                          headers=headers)
+        assert res.status_code == 400
+
+        # Policy applies to the new password.
+        res = client.post("/auth/me/change-password",
+                          json={"current_password": PASSWORD,
+                                "new_password": "alllowercase1"},
+                          headers=headers)
+        assert res.status_code == 422
+
+        # Success: reauth flagged, old tokens dead, new password logs in.
+        res = client.post("/auth/me/change-password",
+                          json={"current_password": PASSWORD,
+                                "new_password": "NewPass123"},
+                          headers=headers)
+        assert res.status_code == 200
+        assert res.json()["reauth_required"] is True
+        assert AuditAction.PASSWORD_CHANGED in _actions(db_session)
+        assert client.get("/auth/me", headers=headers).status_code == 401
+        assert client.post("/auth/refresh-token",
+                           json={"refresh_token": tokens["refresh_token"]}).status_code == 401
+        assert _login(client, user.email, "NewPass123").status_code == 200
+        assert _login(client, user.email, PASSWORD).status_code == 400

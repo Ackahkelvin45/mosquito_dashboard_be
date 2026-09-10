@@ -88,6 +88,10 @@ def get_dashboard(
         default="month",
         description=f"Window + bucket granularity for the mosquito vs temperature/humidity correlation chart. {_GROUP_BY_DESC}",
     ),
+    hourly_group_by: Literal["day", "month", "year"] = Query(
+        default="month",
+        description="Window for the hourly-activity (time-of-day) chart.",
+    ),
     genus_heatmap_group_by: Literal["day", "month", "year"] = Query(
         default="month",
         description=f"Window + bucket granularity for the genus distribution heatmap. {_GROUP_BY_DESC}",
@@ -138,6 +142,7 @@ def get_dashboard(
             breakdown_group_by=breakdown_group_by,
             correlation_group_by=correlation_group_by,
             genus_heatmap_group_by=genus_heatmap_group_by,
+            hourly_group_by=hourly_group_by,
             region=region,
             cluster_id=cluster_id,
             device_id=device_id,
