@@ -140,8 +140,9 @@ class UserService:
                   actor_email=user.email, detail={"reason": "inactive_or_unapproved"}, ip=ip)
             raise HTTPException(status_code=403, detail="Account is inactive or awaiting approval")
 
-        # FR-4: admins always; USERs when they opted in.
-        if user.two_factor_enabled or user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        # 2FA is a per-user choice (toggled in Settings). Admins are seeded ON
+        # by migration c5d6e7f8a9b0 but may turn it off like anyone else.
+        if user.two_factor_enabled:
             return self._start_two_factor_challenge(user, ip=ip)
 
         audit(self.session, AuditAction.LOGIN_SUCCESS, actor_user_id=user.id,
@@ -272,9 +273,6 @@ class UserService:
         if not self.hash_helper.verify_password(password=current_password,
                                                 hashed_password=user.hashed_password):
             raise HTTPException(status_code=400, detail="Invalid password")
-        if not enabled and user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
-            raise HTTPException(status_code=403,
-                                detail="Two-factor authentication is mandatory for administrators")
         reauth_required = False
         if enabled and not user.two_factor_enabled:
             user.two_factor_enabled = True

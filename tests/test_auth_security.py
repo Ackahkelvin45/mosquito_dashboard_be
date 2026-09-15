@@ -83,7 +83,7 @@ class TestLoginGates:
 class TestTwoFactor:
     def test_admin_login_returns_challenge_not_tokens(self, client, db_session,
                                                       make_user, sent_codes):
-        admin = make_user(role=UserRole.ADMIN, password=PASSWORD)
+        admin = make_user(role=UserRole.ADMIN, password=PASSWORD, two_factor_enabled=True)
         res = _login(client, admin.email)
         assert res.status_code == 200
         body = res.json()
@@ -95,7 +95,7 @@ class TestTwoFactor:
 
     def test_correct_code_yields_tokens(self, client, db_session, make_user,
                                         sent_codes):
-        admin = make_user(role=UserRole.SUPER_ADMIN, password=PASSWORD)
+        admin = make_user(role=UserRole.SUPER_ADMIN, password=PASSWORD, two_factor_enabled=True)
         challenge = _login(client, admin.email).json()["two_factor_token"]
         code = sent_codes[0][1]
         res = client.post("/auth/login/verify-2fa",
@@ -110,7 +110,7 @@ class TestTwoFactor:
 
     def test_wrong_code_burns_after_cap(self, client, db_session, make_user,
                                         sent_codes):
-        admin = make_user(role=UserRole.ADMIN, password=PASSWORD)
+        admin = make_user(role=UserRole.ADMIN, password=PASSWORD, two_factor_enabled=True)
         challenge = _login(client, admin.email).json()["two_factor_token"]
         for _ in range(5):
             res = client.post("/auth/login/verify-2fa",
@@ -123,7 +123,7 @@ class TestTwoFactor:
         assert res.status_code == 400
 
     def test_expired_code_rejected(self, client, db_session, make_user, sent_codes):
-        admin = make_user(role=UserRole.ADMIN, password=PASSWORD)
+        admin = make_user(role=UserRole.ADMIN, password=PASSWORD, two_factor_enabled=True)
         challenge = _login(client, admin.email).json()["two_factor_token"]
         db_session.query(LoginOTP).update(
             {"expires_at": datetime.now() - timedelta(minutes=1)})
@@ -134,7 +134,7 @@ class TestTwoFactor:
 
     def test_resend_cooldown_then_new_code(self, client, db_session, make_user,
                                            sent_codes):
-        admin = make_user(role=UserRole.ADMIN, password=PASSWORD)
+        admin = make_user(role=UserRole.ADMIN, password=PASSWORD, two_factor_enabled=True)
         challenge = _login(client, admin.email).json()["two_factor_token"]
         old_code = sent_codes[0][1]
         # Inside the cooldown: refused.
@@ -173,8 +173,10 @@ class TestTwoFactor:
         # ...and the next login challenges.
         assert _login(client, user.email).json()["two_factor_required"] is True
 
-    def test_admin_cannot_disable(self, client, db_session, make_user, sent_codes):
-        admin = make_user(role=UserRole.ADMIN, password=PASSWORD)
+    def test_admin_can_now_disable(self, client, db_session, make_user, sent_codes):
+        """2FA is per-user: an admin may turn it off in Settings (the migration
+        seeds admins ON, but the role no longer forces it)."""
+        admin = make_user(role=UserRole.ADMIN, password=PASSWORD, two_factor_enabled=True)
         challenge = _login(client, admin.email).json()["two_factor_token"]
         token = client.post("/auth/login/verify-2fa",
                             json={"two_factor_token": challenge,
@@ -182,8 +184,15 @@ class TestTwoFactor:
         res = client.post("/auth/me/two-factor",
                           json={"enabled": False, "current_password": PASSWORD},
                           headers={"Authorization": f"Bearer {token}"})
-        assert res.status_code == 403
+        assert res.status_code == 200
+        assert res.json()["two_factor_enabled"] is False
+        # Next login: straight to tokens, no challenge.
+        assert "access_token" in _login(client, admin.email).json()
 
+    def test_admin_without_flag_logs_in_directly(self, client, db_session, make_user):
+        admin = make_user(role=UserRole.ADMIN, password=PASSWORD)
+        body = _login(client, admin.email).json()
+        assert "access_token" in body and "two_factor_required" not in body
 
 class TestSessionVersioning:
     def test_refresh_in_body_and_rotated_out_on_deactivation(self, client,
