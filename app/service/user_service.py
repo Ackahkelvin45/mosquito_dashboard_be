@@ -13,6 +13,7 @@ from app.authentication.schema import (
     TwoFactorChallengeResponse, UserCreate, UserLogin, UserResponse,
     UserLoginResponse, UserUpdate,
 )
+from app.core.app_settings import two_factor_login_enabled
 from app.core.security.authhandler import AuthHandler
 from app.core.security.hashHelper import HashHelper
 from app.notification.events import NotificationEvent, emit
@@ -140,9 +141,10 @@ class UserService:
                   actor_email=user.email, detail={"reason": "inactive_or_unapproved"}, ip=ip)
             raise HTTPException(status_code=403, detail="Account is inactive or awaiting approval")
 
-        # 2FA is a per-user choice (toggled in Settings). Admins are seeded ON
-        # by migration c5d6e7f8a9b0 but may turn it off like anyone else.
-        if user.two_factor_enabled:
+        # 2FA is a per-user choice (toggled in Settings) behind an app-wide
+        # master switch a super admin controls: switch off = nobody is
+        # challenged; per-user flags stay stored and wake up with the switch.
+        if user.two_factor_enabled and two_factor_login_enabled(self.session):
             return self._start_two_factor_challenge(user, ip=ip)
 
         audit(self.session, AuditAction.LOGIN_SUCCESS, actor_user_id=user.id,

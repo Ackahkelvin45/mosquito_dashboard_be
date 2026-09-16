@@ -98,6 +98,34 @@ def change_password(change: ChangePasswordRequest, request: Request,
         raise e
 
 
+@router.get("/security-settings",status_code=status.HTTP_200_OK)
+def get_security_settings(session: Session = Depends(get_db),
+                          current_user: UserResponse = Depends(get_current_user)):
+    """Readable by any signed-in user (the Settings page shows whether the
+    app-wide 2FA gate is on); only a super admin may change it."""
+    from app.core.app_settings import TWO_FACTOR_LOGIN_ENABLED, get_app_settings, invalidate
+    invalidate()  # settings page read = never stale
+    return {TWO_FACTOR_LOGIN_ENABLED: get_app_settings(session)[TWO_FACTOR_LOGIN_ENABLED]}
+
+
+@router.put("/security-settings",status_code=status.HTTP_200_OK)
+def update_security_settings(changes: dict[str, bool], request: Request,
+                             session: Session = Depends(get_db),
+                             current_user: UserResponse = Depends(require_super_admin)):
+    """Master switch for the whole app's OTP sign-in requirement (FR-4
+    customisation): off = nobody is challenged; per-user preferences are kept
+    and apply again when re-enabled."""
+    from app.core.app_settings import TWO_FACTOR_LOGIN_ENABLED, get_app_settings, set_app_setting
+    if TWO_FACTOR_LOGIN_ENABLED not in changes:
+        raise HTTPException(status_code=422, detail=f"'{TWO_FACTOR_LOGIN_ENABLED}' is required")
+    desired = bool(changes[TWO_FACTOR_LOGIN_ENABLED])
+    set_app_setting(session, TWO_FACTOR_LOGIN_ENABLED, desired, updated_by=current_user.id)
+    audit(session, AuditAction.TWO_FACTOR_GLOBAL_TOGGLED,
+          actor_user_id=current_user.id, actor_email=current_user.email,
+          detail={"enabled": desired}, ip=_client_ip(request))
+    return {TWO_FACTOR_LOGIN_ENABLED: get_app_settings(session)[TWO_FACTOR_LOGIN_ENABLED]}
+
+
 @router.post("/me/two-factor",status_code=status.HTTP_200_OK)
 def set_two_factor(toggle: TwoFactorToggleRequest, request: Request,
                    session: Session = Depends(get_db),

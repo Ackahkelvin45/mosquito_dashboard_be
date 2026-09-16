@@ -338,3 +338,47 @@ class TestSelfServiceProfile:
                            json={"refresh_token": tokens["refresh_token"]}).status_code == 401
         assert _login(client, user.email, "NewPass123").status_code == 200
         assert _login(client, user.email, PASSWORD).status_code == 400
+
+
+class TestGlobalTwoFactorSwitch:
+    """The super-admin master gate: off = nobody is challenged at login,
+    per-user flags stay stored and wake up when it's turned back on."""
+
+    def _put(self, client, enabled):
+        return client.put("/auth/security-settings",
+                          json={"two_factor_login_enabled": enabled})
+
+    def test_default_is_enabled(self, client, login_as, make_user):
+        login_as(make_user())
+        body = client.get("/auth/security-settings").json()
+        assert body == {"two_factor_login_enabled": True}
+
+    def test_super_admin_only_can_change(self, client, login_as, make_user):
+        for role in (UserRole.USER, UserRole.ADMIN):
+            login_as(make_user(role=role))
+            assert self._put(client, False).status_code == 403
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        assert self._put(client, False).json() == {"two_factor_login_enabled": False}
+        assert self._put(client, True).json() == {"two_factor_login_enabled": True}
+
+    def test_switch_off_bypasses_challenge_and_back_on_restores(self, client,
+                                                                db_session, login_as,
+                                                                make_user, sent_codes):
+        admin = make_user(role=UserRole.ADMIN, password=PASSWORD,
+                          two_factor_enabled=True)
+        boss = make_user(role=UserRole.SUPER_ADMIN)
+
+        # Gate on (default): challenge.
+        assert _login(client, admin.email).json()["two_factor_required"] is True
+
+        # Super admin flips the app-wide gate off -> straight to tokens,
+        # even though the personal flag is still true.
+        login_as(boss)
+        assert self._put(client, False).status_code == 200
+        body = _login(client, admin.email).json()
+        assert "access_token" in body and "two_factor_required" not in body
+        assert AuditAction.TWO_FACTOR_GLOBAL_TOGGLED in _actions(db_session)
+
+        # Back on -> the stored personal flag applies again.
+        assert self._put(client, True).status_code == 200
+        assert _login(client, admin.email).json()["two_factor_required"] is True

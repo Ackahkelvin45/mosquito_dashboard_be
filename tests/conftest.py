@@ -103,10 +103,13 @@ def db_session(engine, TestingSessionLocal):
 def reset_alert_settings_cache():
     """The threshold snapshot is process-global; the DB is recreated per test.
     Without this, test A's cached values leak into test B's empty tables."""
+    from app.core import app_settings
     from app.notification import alert_settings
     alert_settings.invalidate()
+    app_settings.invalidate()
     yield
     alert_settings.invalidate()
+    app_settings.invalidate()
 
 
 @pytest.fixture(autouse=True)
