@@ -1,3 +1,9 @@
+# Project name is PINNED: Compose otherwise derives it from the directory
+# name, so moving/renaming the checkout would silently create a parallel
+# stack with a NEW EMPTY postgres volume (prod data lives in
+# mosquito_dashboard_be_postgres_data). Never change this value.
+name: mosquito_dashboard_be
+
 services:
   db:
     image: postgres:16-alpine
