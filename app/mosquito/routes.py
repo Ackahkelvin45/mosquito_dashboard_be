@@ -27,7 +27,7 @@ def get_mosquito_filter_options(
     # Guests see filter values derived from public-cluster data only.
     current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
-    """Distinct regions, genus and species values for the historical-data filter dropdowns."""
+    """Distinct regions, genus, species and sex values for the historical-data filter dropdowns."""
     try:
         allowed = visible_cluster_ids(session, current_user)
         return DeviceService(session).get_mosquito_filter_options(allowed_cluster_ids=allowed)
@@ -49,6 +49,8 @@ def get_all_mosquito_events(
     device_uuid: Optional[List[str]] = Query(default=None),
     genus: Optional[List[str]] = Query(default=None, description="Repeatable: matches any of the given genus values"),
     species: Optional[List[str]] = Query(default=None, description="Repeatable: matches any of the given species values"),
+    sex: Optional[List[str]] = Query(default=None, description="Repeatable: exact, case-insensitive match on any of the given sex values"),
+    min_confidence: Optional[float] = Query(default=None, ge=0, le=1, description="Only detections with p_mosq >= this (0-1); detections with unknown (null) confidence are excluded"),
     cluster_id: Optional[List[int]] = Query(default=None, description="Repeatable: matches any of the given clusters (super admin only — intersected with your own scope otherwise)"),
     current_user: UserResponse = Depends(get_current_user_or_guest),
 ):
@@ -68,6 +70,8 @@ def get_all_mosquito_events(
             device_uuids=device_uuid,
             genus=genus,
             species=species,
+            sex=sex,
+            min_confidence=min_confidence,
             cluster_id=cluster_id,
             allowed_cluster_ids=allowed,
             # Excluder names only for clusters the viewer manages.

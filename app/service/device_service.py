@@ -268,6 +268,8 @@ class DeviceService:
         device_uuids: List[str] | None = None,
         genus: str | List[str] | None = None,
         species: str | List[str] | None = None,
+        sex: str | List[str] | None = None,
+        min_confidence: float | None = None,
         cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
         managed_cluster_ids: Optional[set] = frozenset(),
@@ -280,6 +282,8 @@ class DeviceService:
             device_uuids=device_uuids,
             genus=genus,
             species=species,
+            sex=sex,
+            min_confidence=min_confidence,
             cluster_id=cluster_id,
             allowed_cluster_ids=allowed_cluster_ids,
         )

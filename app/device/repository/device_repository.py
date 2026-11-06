@@ -87,7 +87,7 @@ class DeviceRepository(BaseRepository[Device]):
         )
 
     def get_all(self) -> List[Device]:
-        return self.session.query(Device).all()
+        return self.session.query(Device).order_by(Device.id).all()
 
     def device_exists_by_uuid(self, device_uuid: str) -> bool:
         return (
@@ -190,7 +190,9 @@ class DeviceRepository(BaseRepository[Device]):
                 .filter(SensorDeviceReading.trap_status == trap_status)
             )
 
-        return query.all()
+        # Stable order: offset paging (table pages, full exports) must not
+        # skip or repeat rows between requests.
+        return query.order_by(Device.id).all()
     
     def get_mosquito_filter_options(self, allowed_cluster_ids: Optional[set] = None) -> dict:
         """Distinct values that power the historical-data filter dropdowns."""
@@ -202,7 +204,8 @@ class DeviceRepository(BaseRepository[Device]):
         regions = sorted({row[0] for row in region_query.distinct()})
 
         reading_query = (
-            self.session.query(MosquitoIndividualReading.genus, MosquitoIndividualReading.species)
+            self.session.query(MosquitoIndividualReading.genus, MosquitoIndividualReading.species,
+                               MosquitoIndividualReading.sex)
             .join(MosquitoEvent, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
             .join(Device, MosquitoEvent.device_id == Device.id)
             .filter(LIVE_MOSQUITO_EVENT)
@@ -212,16 +215,22 @@ class DeviceRepository(BaseRepository[Device]):
 
         genus_values: set = set()
         species_values: set = set()
-        for genus, species in reading_query.distinct():
+        sex_values: set = set()
+        for genus, species, sex in reading_query.distinct():
             if genus:
                 genus_values.add(genus)
             if species:
                 species_values.add(species)
+            # MQTT sends "female"/"male"/"", REST may send any casing: offer
+            # one lowercase value per sex (the filter matches case-insensitively).
+            if sex and sex.strip():
+                sex_values.add(sex.strip().lower())
 
         return {
             "regions": regions,
             "genus": sorted(genus_values),
             "species": sorted(species_values),
+            "sex": sorted(sex_values),
         }
 
     def refresh_last_activity(self, device_id: int) -> None:
@@ -271,7 +280,7 @@ class DeviceRepository(BaseRepository[Device]):
         return (
             self.session.query(SensorDeviceReading)
             .filter(SensorDeviceReading.device_id == device_id, LIVE_SENSOR_READING)
-            .order_by(SensorDeviceReading.timestamp.desc())
+            .order_by(SensorDeviceReading.timestamp.desc(), SensorDeviceReading.id.desc())
             .all()
         )
 
@@ -318,6 +327,8 @@ class DeviceRepository(BaseRepository[Device]):
         device_uuids: List[str] | None = None,
         genus: str | List[str] | None = None,
         species: str | List[str] | None = None,
+        sex: str | List[str] | None = None,
+        min_confidence: float | None = None,
         cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
     ):
@@ -354,6 +365,15 @@ class DeviceRepository(BaseRepository[Device]):
         species_values = _as_filter_list(species)
         if species_values:
             query = query.filter(or_(*[MosquitoIndividualReading.species.ilike(f"%{s}%") for s in species_values]))
+        # Sex is an exact, case-insensitive match — not genus's substring
+        # ilike, since "%male%" would also match "female".
+        sex_values = [s.lower() for s in _as_filter_list(sex)]
+        if sex_values:
+            query = query.filter(func.lower(func.trim(MosquitoIndividualReading.sex)).in_(sex_values))
+        # NULL p_mosq (or no reading) fails the comparison: unknown confidence
+        # doesn't meet a minimum.
+        if min_confidence is not None:
+            query = query.filter(MosquitoIndividualReading.p_mosq >= min_confidence)
 
         if search:
             tokens = [t for t in search.strip().split() if t]
@@ -393,7 +413,7 @@ class DeviceRepository(BaseRepository[Device]):
             return (
                 base_query
                 .options(joinedload(MosquitoEvent.mosquito_reading))
-                .order_by(MosquitoEvent.timestamp.desc())
+                .order_by(MosquitoEvent.timestamp.desc(), MosquitoEvent.id.desc())
                 .all()
             )
 
@@ -423,7 +443,7 @@ class DeviceRepository(BaseRepository[Device]):
             self.session.query(MosquitoEvent)
             .join(ids_subq, MosquitoEvent.id == ids_subq.c.id)
             .options(joinedload(MosquitoEvent.mosquito_reading))
-            .order_by(MosquitoEvent.timestamp.desc())
+            .order_by(MosquitoEvent.timestamp.desc(), MosquitoEvent.id.desc())
             .all()
         )
 
@@ -491,13 +511,16 @@ class DeviceRepository(BaseRepository[Device]):
         device_uuids: List[str] | None = None,
         genus: str | List[str] | None = None,
         species: str | List[str] | None = None,
+        sex: str | List[str] | None = None,
+        min_confidence: float | None = None,
         cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
     ) -> List[MosquitoEvent]:
         # Cluster scope needs the Device join, so force the join path when set.
         needs_join = (
-            bool(search or region or device_uuids or genus or species or cluster_id)
+            bool(search or region or device_uuids or genus or species or sex or cluster_id)
             or allowed_cluster_ids is not None
+            or min_confidence is not None
         )
 
         if not needs_join:
@@ -513,7 +536,7 @@ class DeviceRepository(BaseRepository[Device]):
                     joinedload(MosquitoEvent.device),
                     joinedload(MosquitoEvent.mosquito_reading),
                 )
-                .order_by(MosquitoEvent.timestamp.desc())
+                .order_by(MosquitoEvent.timestamp.desc(), MosquitoEvent.id.desc())
                 .all()
             )
 
@@ -532,6 +555,8 @@ class DeviceRepository(BaseRepository[Device]):
             device_uuids=device_uuids,
             genus=genus,
             species=species,
+            sex=sex,
+            min_confidence=min_confidence,
             cluster_id=cluster_id,
             allowed_cluster_ids=allowed_cluster_ids,
         )
@@ -549,7 +574,7 @@ class DeviceRepository(BaseRepository[Device]):
                 joinedload(MosquitoEvent.device),
                 joinedload(MosquitoEvent.mosquito_reading),
             )
-            .order_by(MosquitoEvent.timestamp.desc())
+            .order_by(MosquitoEvent.timestamp.desc(), MosquitoEvent.id.desc())
             .all()
         )
 

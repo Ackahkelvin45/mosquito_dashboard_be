@@ -69,7 +69,7 @@ class DeviceClusterRepository(BaseRepository[DeviceCluster]):
         )
 
     def get_all(self) -> List[DeviceCluster]:
-        return self.session.query(DeviceCluster).all()
+        return self.session.query(DeviceCluster).order_by(DeviceCluster.id).all()
 
     def delete_cluster(self, cluster_id: int) -> None:
         cluster = self.get_by_id(cluster_id)

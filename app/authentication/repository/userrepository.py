@@ -30,7 +30,7 @@ class UserRepository(BaseRepository[User]):
     
 
     def get_all_users(self) -> list[User]:
-        return self.session.query(User).all()
+        return self.session.query(User).order_by(User.id).all()
     
     def filter_users(self, email: str = None, name: str = None, role: str = None, approval_status: str = None) -> list[User]:
         query = self.session.query(User)
@@ -43,7 +43,7 @@ class UserRepository(BaseRepository[User]):
         if approval_status is not None:
             query = query.filter(User.approval_status == approval_status)
 
-        return query.all()
+        return query.order_by(User.id).all()
 
 
   

@@ -26,6 +26,7 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
             self.session.query(ResearcherRequest)
             .join(ResearcherRequest.user)
             .options(joinedload(ResearcherRequest.user))
+            .order_by(ResearcherRequest.id)
             .all()
         )
 
