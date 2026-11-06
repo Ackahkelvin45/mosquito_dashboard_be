@@ -95,7 +95,7 @@ row is created at all**), then every gate whose set contains the type. Types not
 gate (account events, cluster events, summaries, TEST) can only be silenced by
 `in_app_enabled`. `push_enabled`/`email_enabled` gate channel dispatch only — the in-app
 row is still created. Email additionally auto-sends only for CRITICAL severity or the
-types in `EMAIL_AUTO_TYPES` (the two summaries).
+types in `EMAIL_AUTO_TYPES` (the two summaries, species detected, activity surge).
 
 **Adding a new preference flag** (e.g. `storage_alerts`):
 

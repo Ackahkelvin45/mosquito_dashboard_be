@@ -6,9 +6,12 @@ from fastapi import HTTPException
 from app.authentication.enums import ResearcherRequestStatus
 from app.device.enums import Status as ClusterStatus
 from app.device.models import DeviceCluster
+import logging
 import secrets
 import re
 from sqlalchemy.orm import joinedload
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -53,6 +56,19 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
 
         if user not in cluster.cluster_admins:
             cluster.cluster_admins.append(user)
+
+        # users.cluster_id is the membership that data scoping and alert
+        # fan-out read (cluster_admins is not). Fill it only when empty: a user
+        # already in another cluster is never moved by an approval — that is
+        # an explicit super-admin action (PATCH /auth/users/{id}).
+        if user.cluster_id is None:
+            user.cluster_id = cluster.id
+        elif user.cluster_id != cluster.id:
+            logger.warning(
+                "Researcher request %s approved for cluster %s but user %s stays "
+                "in cluster %s (not moved automatically)",
+                request.id, cluster.id, user.id, user.cluster_id,
+            )
 
         return cluster
 
@@ -103,6 +119,12 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
         if not request:
             raise HTTPException(status_code=404, detail=f"Researcher request with id {request_id} not found")
 
+        # Cluster first: approval below attaches the user to request.cluster_id.
+        if request_data.cluster_id is not None:
+            if self.session.query(DeviceCluster).filter(DeviceCluster.id == request_data.cluster_id).first() is None:
+                raise HTTPException(status_code=404, detail=f"Cluster with id {request_data.cluster_id} not found")
+            request.cluster_id = request_data.cluster_id
+
         if request_data.status is not None:
             try:
                 normalized_status = request_data.status.strip().lower()
@@ -117,10 +139,6 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
 
             request.status = status_enum
 
-        if request_data.cluster_id is not None:
-            if self.session.query(DeviceCluster).filter(DeviceCluster.id == request_data.cluster_id).first() is None:
-                raise HTTPException(status_code=404, detail=f"Cluster with id {request_data.cluster_id} not found")
-            request.cluster_id = request_data.cluster_id
         self.session.commit()
         self.session.refresh(request)
 

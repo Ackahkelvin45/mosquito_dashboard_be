@@ -82,9 +82,18 @@ PREFERENCE_GATES: dict[str, set[NotificationType]] = {
     },
 }
 
-# Email is wired but deliberately quiet: it only auto-sends for summaries and
-# CRITICAL alerts, and only when the user opted in via email_enabled.
-EMAIL_AUTO_TYPES = {NotificationType.DAILY_SUMMARY, NotificationType.WEEKLY_SUMMARY}
+# Email is wired but deliberately quiet: it only sends when the user opted in
+# via email_enabled, and then only for CRITICAL alerts plus these types —
+# summaries, and the outbreak signals (vector species, activity surge) that
+# health officials need by email regardless of severity. Dedupe (events.py)
+# limits species to one per device per label per 30 min and surge to one per
+# device per 120 min; super admins get every cluster's alerts. No email cap.
+EMAIL_AUTO_TYPES = {
+    NotificationType.DAILY_SUMMARY,
+    NotificationType.WEEKLY_SUMMARY,
+    NotificationType.SPECIES_DETECTED,
+    NotificationType.ACTIVITY_SURGE,
+}
 
 # Stand-in for users with no notification_preferences row yet — mirrors the
 # model/migration defaults (all True except email). Used by the bulk fan-out
@@ -520,8 +529,8 @@ class NotificationService:
         return success
 
     def send_email(self, notification: Notification, user_id: int) -> bool:
-        """Email-deliver one notification (explicit calls / summaries /
-        critical alerts only — never automatic for every notification)."""
+        """Email-deliver one notification (explicit calls, or the auto rule:
+        CRITICAL alerts and EMAIL_AUTO_TYPES — never every notification)."""
         user = self.session.query(User).filter(User.id == user_id).first()
         if not user:
             return False

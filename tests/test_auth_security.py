@@ -10,6 +10,8 @@ import app.service.user_service as user_service_module
 from app.audit.models import AuditAction, AuditLog
 from app.authentication.enums import ApprovalStatus, UserRole
 from app.authentication.models import LoginOTP
+from app.authentication.repository.researcher_request_repository import ResearcherRequestRepository
+from app.authentication.schema import ResearcherRequestCreate
 from app.core.database import get_db
 
 PASSWORD = "correct-horse-9"
@@ -257,6 +259,48 @@ class TestResearcherRbac:
                                 ).status_code == 403
         login_as(make_user(role=UserRole.SUPER_ADMIN))
         assert client.get("/auth/researcher-requests").status_code == 200
+
+
+class TestResearcherApprovalMembership:
+    """Approval must set users.cluster_id (what alerts/scoping read), but
+    never move a user who already belongs to another cluster."""
+
+    def _approve(self, db_session, user, cluster):
+        repo = ResearcherRequestRepository(db_session)
+        request = repo.create_researcher_request(
+            ResearcherRequestCreate(user_id=user.id, cluster_id=cluster.id))
+        repo.update_researcher_request_status(request.id, "approved")
+        db_session.refresh(user)
+        db_session.refresh(cluster)
+
+    def test_sets_cluster_id_when_null(self, db_session, make_user, make_cluster):
+        user, cluster = make_user(), make_cluster()
+        self._approve(db_session, user, cluster)
+        assert user.cluster_id == cluster.id
+        assert user in cluster.cluster_admins
+
+    def test_leaves_existing_cluster_id_alone(self, db_session, make_user,
+                                              make_cluster):
+        home, requested = make_cluster(), make_cluster()
+        user = make_user(cluster_id=home.id)
+        self._approve(db_session, user, requested)
+        assert user.cluster_id == home.id
+        assert user in requested.cluster_admins
+
+    def test_patch_approve_with_new_cluster_uses_that_cluster(
+            self, db_session, make_user, make_cluster):
+        from app.authentication.schema import UpdateResearcherRequest
+        original, chosen = make_cluster(), make_cluster()
+        user = make_user()
+        repo = ResearcherRequestRepository(db_session)
+        request = repo.create_researcher_request(
+            ResearcherRequestCreate(user_id=user.id, cluster_id=original.id))
+        repo.update_reseacher_request(
+            request.id, UpdateResearcherRequest(status="approved", cluster_id=chosen.id))
+        db_session.refresh(user)
+        db_session.refresh(chosen)
+        assert user.cluster_id == chosen.id
+        assert user in chosen.cluster_admins
 
 
 class TestAuditEndpoint:

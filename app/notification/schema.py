@@ -45,7 +45,7 @@ class NotificationPreferenceResponse(BaseModel):
     offline_alerts: bool = Field(..., description="Receive device offline/online alerts")
     admin_alerts: bool = Field(..., description="Receive admin alerts (registrations, unknown devices, bad payloads)")
     researcher_alerts: bool = Field(..., description="Receive researcher request alerts")
-    email_enabled: bool = Field(..., description="Allow email delivery (summaries and critical alerts)")
+    email_enabled: bool = Field(..., description="Allow email delivery (species and surge alerts, summaries, and critical alerts)")
     push_enabled: bool = Field(..., description="Allow browser push delivery")
     in_app_enabled: bool = Field(..., description="Allow in-app notifications (master switch for creation)")
     # Personal thresholds — null means "use the system setting". Filter-only:
@@ -68,7 +68,7 @@ class NotificationPreferenceUpdate(BaseModel):
     offline_alerts: Optional[bool] = Field(None, description="Receive device offline/online alerts")
     admin_alerts: Optional[bool] = Field(None, description="Receive admin alerts (registrations, unknown devices, bad payloads)")
     researcher_alerts: Optional[bool] = Field(None, description="Receive researcher request alerts")
-    email_enabled: Optional[bool] = Field(None, description="Allow email delivery (summaries and critical alerts)")
+    email_enabled: Optional[bool] = Field(None, description="Allow email delivery (species and surge alerts, summaries, and critical alerts)")
     push_enabled: Optional[bool] = Field(None, description="Allow browser push delivery")
     in_app_enabled: Optional[bool] = Field(None, description="Allow in-app notifications (master switch for creation)")
     personal_temp_max: Optional[float] = Field(None, ge=-50, le=60)

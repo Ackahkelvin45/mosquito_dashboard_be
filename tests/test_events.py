@@ -183,6 +183,30 @@ class TestActivitySurge:
         assert len(_rows(db_session, NotificationType.ACTIVITY_SURGE)) == 1
 
 
+# ── Outbreak alerts by email (health-official requirement) ───────────────────
+
+class TestOutbreakAlertEmail:
+    """WARNING species/surge alerts email cluster members who opted in."""
+
+    @pytest.mark.parametrize("event,ctx", [
+        (NotificationEvent.SPECIES_DETECTED, {"genus": "Aedes", "sex": "female", "age_group": ""}),
+        (NotificationEvent.ACTIVITY_SURGE, {"count": events.NOTIFY_SURGE_THRESHOLD + 1}),
+    ])
+    def test_warning_alert_emails_only_opted_in_members(
+            self, db_session, service, make_user, make_cluster, make_device,
+            dispatch_recorder, event, ctx):
+        cluster = make_cluster()
+        opted_in = make_user(cluster_id=cluster.id)
+        opted_out = make_user(cluster_id=cluster.id)
+        service.preference_repository.update_preferences(opted_in.id, email_enabled=True)
+
+        emit(db_session, event, device=make_device(cluster), **ctx)
+
+        assert all(r.severity == NotificationSeverity.WARNING for r in _rows(db_session))
+        email_by_user = {uid: email for (_nid, uid, _push, email) in dispatch_recorder}
+        assert email_by_user == {opted_in.id: True, opted_out.id: False}
+
+
 # ── LOW_BATTERY ──────────────────────────────────────────────────────────────
 
 class TestLowBattery:
