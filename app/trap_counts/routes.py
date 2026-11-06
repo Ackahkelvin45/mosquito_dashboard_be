@@ -22,7 +22,7 @@ from app.authentication.enums import UserRole
 from app.authentication.schema import UserResponse
 from app.core.database import get_db
 from app.core.security.permissions import (
-    assert_device_visible, is_super_admin, require_admin, require_roles, visible_cluster_ids,
+    assert_device_visible, manages_cluster, require_admin, require_roles, visible_cluster_ids,
 )
 from app.device.models import (
     LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING, Device, MosquitoEvent,
@@ -165,7 +165,7 @@ def _load_for_edit(session: Session, user: UserResponse, count_id: int) -> Manua
     if row is None:
         raise HTTPException(status_code=404, detail="Trap count not found")
     assert_device_visible(session, user, device)
-    if not is_super_admin(user) and device.cluster_id != user.cluster_id:
+    if not manages_cluster(user, device.cluster_id):
         raise HTTPException(status_code=403, detail="You can only edit trap counts in your own cluster")
     return row
 
@@ -237,7 +237,7 @@ def create_counts(
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")
     assert_device_visible(session, current_user, device)
-    if not is_super_admin(current_user) and device.cluster_id != current_user.cluster_id:
+    if not manages_cluster(current_user, device.cluster_id):
         raise HTTPException(status_code=403, detail="You can only add trap counts for devices in your own cluster")
     if payload.period_end <= payload.period_start:
         raise HTTPException(status_code=422, detail="period_end must be after period_start")

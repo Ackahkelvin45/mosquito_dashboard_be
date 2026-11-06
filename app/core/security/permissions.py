@@ -45,6 +45,16 @@ def is_super_admin(user: UserResponse) -> bool:
     return user.role == UserRole.SUPER_ADMIN
 
 
+def manages_cluster(user: UserResponse, cluster_id: Optional[int]) -> bool:
+    """May `user` manage things that belong to `cluster_id`? A super admin
+    manages everything; anyone else only their own cluster. A non-super-admin
+    with no cluster manages nothing — None never matches None, so cluster-less
+    targets are not "theirs"."""
+    if is_super_admin(user):
+        return True
+    return user.cluster_id is not None and cluster_id == user.cluster_id
+
+
 def is_guest(user: UserResponse) -> bool:
     return user.role == UserRole.GUEST
 

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from utils.protected_route import get_current_user, get_current_user_or_guest
 from app.authentication.schema import UserResponse
 from app.core.security.permissions import (
-    require_super_admin, require_admin, visible_cluster_ids, is_super_admin,
+    require_super_admin, require_admin, visible_cluster_ids, manages_cluster, is_super_admin,
 )
 from app.service.device_service import DeviceService
 from app.service.device_cluster_service import DeviceClusterService
@@ -93,7 +93,7 @@ def update_device(device_id: int, device_data: DeviceUpdate, session: Session = 
     try:
         allowed = visible_cluster_ids(session, current_user)
         existing = DeviceService(session).get_device_by_id(device_id, allowed_cluster_ids=allowed)
-        if not is_super_admin(current_user) and existing.cluster_id != current_user.cluster_id:
+        if not manages_cluster(current_user, existing.cluster_id):
             raise HTTPException(status_code=403, detail="You can only edit devices in your own cluster")
         updated = DeviceService(session).update_device(device_id, device_data)
         audit(session, AuditAction.DEVICE_UPDATED, actor_user_id=current_user.id,
@@ -287,9 +287,11 @@ def get_mosquito_events(
 @router.delete("/uuid/{device_uuid}/mosquito-events/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_mosquito_event(device_uuid: str, event_id: int, session: Session = Depends(get_db),
                           current_user: UserResponse = Depends(require_admin)):
-    # Deleting data is an admin/super-admin action, scoped to a visible device.
+    # Deleting data is an admin action on devices the admin MANAGES: their own
+    # cluster only (not public ones they can merely see). Super admin: all.
     try:
-        allowed = visible_cluster_ids(session, current_user)
+        allowed = None if is_super_admin(current_user) else (
+            {current_user.cluster_id} if current_user.cluster_id is not None else set())
         DeviceService(session).delete_mosquito_event(device_uuid=device_uuid, event_id=event_id, allowed_cluster_ids=allowed)
         audit(session, AuditAction.MOSQUITO_EVENT_DELETED, actor_user_id=current_user.id,
               actor_email=current_user.email, target_type="mosquito_event", target_id=event_id,

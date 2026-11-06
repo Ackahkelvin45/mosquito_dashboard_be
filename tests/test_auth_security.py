@@ -303,6 +303,343 @@ class TestResearcherApprovalMembership:
         assert user in chosen.cluster_admins
 
 
+class TestResearcherRejectionRevokesMembership:
+    """Rejecting an APPROVED request clears users.cluster_id only when it is
+    still the request's cluster; rejecting a pending one changes nothing."""
+
+    @pytest.fixture(autouse=True)
+    def _no_emails(self, monkeypatch):
+        import app.authentication.routes as auth_routes
+        for name in ("send_researcher_approved_email", "send_researcher_declined_email"):
+            monkeypatch.setattr(auth_routes, name, lambda *a, **k: None)
+
+    def _request(self, db_session, user, cluster, approve):
+        repo = ResearcherRequestRepository(db_session)
+        request = repo.create_researcher_request(
+            ResearcherRequestCreate(user_id=user.id, cluster_id=cluster.id))
+        if approve:
+            repo.update_researcher_request_status(request.id, "approved")
+        return request
+
+    def _reject(self, client, request_id, route):
+        if route == "status":
+            return client.patch(f"/auth/researcher-requests/{request_id}/status?status=rejected")
+        return client.patch(f"/auth/researcher-requests/{request_id}", json={"status": "rejected"})
+
+    def _decisions(self, db_session):
+        return [row.detail for row in db_session.query(AuditLog).filter(
+            AuditLog.action == AuditAction.RESEARCHER_REQUEST_DECIDED).all()]
+
+    @pytest.mark.parametrize("route", ["status", "patch"])
+    def test_rejecting_approved_clears_cluster(self, client, login_as, db_session,
+                                               make_user, make_cluster, route):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        user, cluster = make_user(), make_cluster()
+        request = self._request(db_session, user, cluster, approve=True)
+        db_session.refresh(user)
+        assert user.cluster_id == cluster.id
+
+        assert self._reject(client, request.id, route).status_code == 200
+        db_session.refresh(user)
+        assert user.cluster_id is None
+        assert {"status": "rejected", "revoked_cluster_id": cluster.id} in self._decisions(db_session)
+
+    @pytest.mark.parametrize("route", ["status", "patch"])
+    def test_rejecting_approved_keeps_other_cluster(self, client, login_as, db_session,
+                                                    make_user, make_cluster, route):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        home, requested = make_cluster(), make_cluster()
+        user = make_user(cluster_id=home.id)
+        request = self._request(db_session, user, requested, approve=True)
+
+        assert self._reject(client, request.id, route).status_code == 200
+        db_session.refresh(user)
+        assert user.cluster_id == home.id
+        assert not any("revoked_cluster_id" in (d or {}) for d in self._decisions(db_session))
+
+    @pytest.mark.parametrize("route", ["status", "patch"])
+    def test_rejecting_pending_leaves_cluster(self, client, login_as, db_session,
+                                              make_user, make_cluster, route):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        cluster = make_cluster()
+        user = make_user(cluster_id=cluster.id)
+        request = self._request(db_session, user, cluster, approve=False)
+
+        assert self._reject(client, request.id, route).status_code == 200
+        db_session.refresh(user)
+        assert user.cluster_id == cluster.id
+        # Both routes audit every decision; no revocation in the detail.
+        assert self._decisions(db_session) == [{"status": "rejected"}]
+
+    @pytest.mark.parametrize("route", ["status", "patch"])
+    def test_reject_drops_cluster_admin_and_reapprove_restores(
+            self, client, login_as, db_session, make_user, make_cluster, route):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        user, cluster = make_user(), make_cluster()
+        request = self._request(db_session, user, cluster, approve=True)
+        db_session.refresh(cluster)
+        assert user in cluster.cluster_admins
+
+        assert self._reject(client, request.id, route).status_code == 200
+        db_session.refresh(user)
+        db_session.refresh(cluster)
+        assert user.cluster_id is None
+        assert user not in cluster.cluster_admins
+
+        assert client.patch(f"/auth/researcher-requests/{request.id}/status?status=approved"
+                            ).status_code == 200
+        db_session.refresh(user)
+        db_session.refresh(cluster)
+        assert user.cluster_id == cluster.id
+        assert user in cluster.cluster_admins
+
+    def test_patch_cluster_only_on_approved_request_is_409(
+            self, client, login_as, db_session, make_user, make_cluster):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        approved, other = make_cluster(), make_cluster()
+        user = make_user()
+        request = self._request(db_session, user, approved, approve=True)
+
+        res = client.patch(f"/auth/researcher-requests/{request.id}", json={"cluster_id": other.id})
+        assert res.status_code == 409
+        assert "set status" in res.json()["detail"]
+        db_session.refresh(request)
+        assert request.cluster_id == approved.id
+
+    def test_patch_cluster_only_on_pending_request_still_allowed(
+            self, client, login_as, db_session, make_user, make_cluster):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        first, other = make_cluster(), make_cluster()
+        request = self._request(db_session, make_user(), first, approve=False)
+
+        assert client.patch(f"/auth/researcher-requests/{request.id}",
+                            json={"cluster_id": other.id}).status_code == 200
+        db_session.refresh(request)
+        assert request.cluster_id == other.id
+        assert self._decisions(db_session) == []  # not a decision, not audited
+
+    def test_patch_approve_is_audited(self, client, login_as, db_session,
+                                      make_user, make_cluster):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        request = self._request(db_session, make_user(), make_cluster(), approve=False)
+        assert client.patch(f"/auth/researcher-requests/{request.id}",
+                            json={"status": "approved"}).status_code == 200
+        assert self._decisions(db_session) == [{"status": "approved"}]
+
+    def _set(self, client, request_id, status):
+        return client.patch(f"/auth/researcher-requests/{request_id}/status?status={status}")
+
+    def test_approved_to_pending_revokes_then_reject_does_nothing_more(
+            self, client, login_as, db_session, make_user, make_cluster):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        user, cluster = make_user(), make_cluster()
+        request = self._request(db_session, user, cluster, approve=True)
+
+        assert self._set(client, request.id, "pending").status_code == 200
+        db_session.refresh(user)
+        db_session.refresh(cluster)
+        assert user.cluster_id is None
+        assert user not in cluster.cluster_admins
+        assert self._decisions(db_session) == [{"status": "pending", "revoked_cluster_id": cluster.id}]
+
+        assert self._set(client, request.id, "rejected").status_code == 200
+        db_session.refresh(user)
+        assert user.cluster_id is None
+        assert self._decisions(db_session)[-1] == {"status": "rejected"}
+
+    def test_approved_to_pending_to_approved_restores(
+            self, client, login_as, db_session, make_user, make_cluster):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        user, cluster = make_user(), make_cluster()
+        request = self._request(db_session, user, cluster, approve=True)
+
+        assert self._set(client, request.id, "pending").status_code == 200
+        assert self._set(client, request.id, "approved").status_code == 200
+        db_session.refresh(user)
+        db_session.refresh(cluster)
+        assert user.cluster_id == cluster.id
+        assert user in cluster.cluster_admins
+
+    def test_patch_approve_with_new_cluster_on_approved_is_409(
+            self, client, login_as, db_session, make_user, make_cluster):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        a, b = make_cluster(), make_cluster()
+        user = make_user()
+        request = self._request(db_session, user, a, approve=True)
+
+        res = client.patch(f"/auth/researcher-requests/{request.id}",
+                           json={"status": "approved", "cluster_id": b.id})
+        assert res.status_code == 409
+        db_session.refresh(request)
+        db_session.refresh(user)
+        db_session.refresh(b)
+        assert request.cluster_id == a.id
+        assert user.cluster_id == a.id
+        assert user not in b.cluster_admins
+
+    def test_patch_reject_with_new_cluster_revokes_old_cluster(
+            self, client, login_as, db_session, make_user, make_cluster):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        a, b = make_cluster(), make_cluster()
+        user = make_user()
+        request = self._request(db_session, user, a, approve=True)
+
+        assert client.patch(f"/auth/researcher-requests/{request.id}",
+                            json={"status": "rejected", "cluster_id": b.id}).status_code == 200
+        db_session.refresh(user)
+        db_session.refresh(a)
+        assert user.cluster_id is None
+        assert user not in a.cluster_admins
+        assert self._decisions(db_session) == [{"status": "rejected", "revoked_cluster_id": a.id}]
+
+    def test_reject_when_user_in_other_cluster_drops_stale_admin_entry(
+            self, client, login_as, db_session, make_user, make_cluster):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        home, requested = make_cluster(), make_cluster()
+        user = make_user(cluster_id=home.id)
+        request = self._request(db_session, user, requested, approve=True)
+        db_session.refresh(requested)
+        assert user in requested.cluster_admins
+
+        assert self._reject(client, request.id, "status").status_code == 200
+        db_session.refresh(user)
+        db_session.refresh(requested)
+        assert user.cluster_id == home.id
+        assert user not in requested.cluster_admins
+
+    def test_patch_reject_with_new_cluster_revokes_approved_one(
+            self, client, login_as, db_session, make_user, make_cluster):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        approved, other = make_cluster(), make_cluster()
+        user = make_user()
+        request = self._request(db_session, user, approved, approve=True)
+
+        assert client.patch(f"/auth/researcher-requests/{request.id}",
+                            json={"status": "rejected", "cluster_id": other.id}).status_code == 200
+        db_session.refresh(user)
+        assert user.cluster_id is None
+
+    @pytest.mark.parametrize("route", ["status", "patch"])
+    def test_rejection_removes_private_cluster_data_end_to_end(
+            self, db_session, make_user, make_cluster, make_device, route):
+        """Real bearer tokens (no auth override): after rejection the
+        researcher's same token no longer reaches the private cluster's
+        devices or readings; public data stays visible."""
+        from fastapi.testclient import TestClient
+        from app.core.security.authhandler import AuthHandler
+        from app.authentication.routes import router as auth_router
+        from app.device.models import MosquitoEvent, SensorDeviceReading
+        from app.device.routes import router as device_router
+        from app.mosquito.routes import router as mosquito_router
+
+        application = FastAPI()
+        application.include_router(auth_router, prefix="/auth")
+        application.include_router(device_router, prefix="/devices")
+        application.include_router(mosquito_router, prefix="/mosquito")
+        application.dependency_overrides[get_db] = lambda: db_session
+        client = TestClient(application, raise_server_exceptions=False)
+
+        def bearer(u):
+            return {"Authorization": f"Bearer {AuthHandler.create_access_token(u.id, u.token_version or 0)}"}
+
+        admin = make_user(role=UserRole.SUPER_ADMIN)
+        user = make_user()
+        private, public = make_cluster(public=False), make_cluster(public=True)
+        dpriv, dpub = make_device(private), make_device(public)
+        now = datetime.utcnow()
+        for d in (dpriv, dpub):
+            db_session.add(MosquitoEvent(device_id=d.id, timestamp=now, count=1))
+            db_session.add(SensorDeviceReading(device_id=d.id, timestamp=now, battery_voltage=3.9))
+        db_session.commit()
+
+        request = self._request(db_session, user, private, approve=True)
+        hdr = bearer(user)
+
+        def seen():
+            devs = {d["device_uuid"] for d in client.get("/devices?page_size=100", headers=hdr).json()["items"]}
+            sensor_devs = {r["device_id"] for r in client.get("/devices/sensor-readings?page_size=100",
+                                                              headers=hdr).json()["items"]}
+            mosq_devs = {r["device_id"] for r in client.get("/mosquito?page_size=100", headers=hdr).json()["items"]}
+            clusters = {c["id"] for c in client.get("/devices/clusters?page_size=100", headers=hdr).json()["items"]}
+            return {
+                "devices": devs, "sensor": sensor_devs, "mosquito": mosq_devs, "clusters": clusters,
+                "by_uuid": client.get(f"/devices/uuid/{dpriv.device_uuid}", headers=hdr).status_code,
+                "by_id": client.get(f"/devices/{dpriv.id}", headers=hdr).status_code,
+                "dev_sensor": client.get(f"/devices/uuid/{dpriv.device_uuid}/sensor-readings",
+                                         headers=hdr).status_code,
+                "dev_mosq": client.get(f"/devices/uuid/{dpriv.device_uuid}/mosquito-events",
+                                       headers=hdr).status_code,
+                "cluster": client.get(f"/devices/clusters/{private.id}", headers=hdr).status_code,
+                "filtered": client.get(f"/mosquito?cluster_id={private.id}", headers=hdr).json()["items"],
+            }
+
+        before = seen()
+        assert before["devices"] == {dpriv.device_uuid, dpub.device_uuid}
+        assert before["sensor"] == before["mosquito"] == {dpriv.id, dpub.id}
+        assert before["clusters"] == {private.id, public.id}
+        assert before["by_uuid"] == before["by_id"] == before["dev_sensor"] == before["dev_mosq"] \
+            == before["cluster"] == 200
+        assert before["filtered"]
+
+        if route == "status":
+            res = client.patch(f"/auth/researcher-requests/{request.id}/status?status=rejected",
+                               headers=bearer(admin))
+        else:
+            res = client.patch(f"/auth/researcher-requests/{request.id}",
+                               json={"status": "rejected"}, headers=bearer(admin))
+        assert res.status_code == 200
+
+        after = seen()  # same researcher token, no re-login
+        assert after["devices"] == {dpub.device_uuid}
+        assert after["sensor"] == after["mosquito"] == {dpub.id}
+        assert after["clusters"] == {public.id}
+        assert after["by_uuid"] == after["by_id"] == after["dev_sensor"] == after["dev_mosq"] \
+            == after["cluster"] == 404
+        assert after["filtered"] == []
+
+
+class TestClusterlessAdminManagesNobody:
+    """A non-super-admin ADMIN with users.cluster_id = None (e.g. a researcher
+    made ADMIN, then rejected) must not be treated as unrestricted."""
+
+    @pytest.fixture(autouse=True)
+    def _no_emails(self, monkeypatch):
+        import app.authentication.routes as auth_routes
+        monkeypatch.setattr(auth_routes, "send_welcome_email", lambda *a, **k: None)
+
+    def _new_user(self):
+        return {"email": f"new-{datetime.utcnow().timestamp()}@example.com",
+                "password": "Password1", "first_name": "Aa", "last_name": "Bb"}
+
+    def test_clusterless_admin_sees_and_manages_nobody(self, client, login_as, make_user):
+        loose = make_user()  # cluster-less target
+        login_as(make_user(role=UserRole.ADMIN))
+
+        body = client.get("/auth/users").json()
+        assert body["items"] == [] and body["total"] == 0
+        assert client.get(f"/auth/users/{loose.id}").status_code == 404
+        assert client.patch(f"/auth/users/{loose.id}",
+                            json={"role": "ADMIN"}).status_code == 404
+        assert client.post("/auth/register", json=self._new_user()).status_code == 403
+
+    def test_cluster_admin_still_works(self, client, login_as, make_user, make_cluster):
+        cluster = make_cluster()
+        member, outsider, loose = make_user(cluster_id=cluster.id), make_user(cluster_id=make_cluster().id), make_user()
+        admin = make_user(role=UserRole.ADMIN, cluster_id=cluster.id)
+        login_as(admin)
+
+        ids = {u["id"] for u in client.get("/auth/users?page_size=100").json()["items"]}
+        assert ids == {member.id, admin.id}
+        assert client.get(f"/auth/users/{member.id}").status_code == 200
+        assert client.patch(f"/auth/users/{member.id}",
+                            json={"first_name": "Renamed"}).status_code == 200
+        for other in (outsider, loose):
+            assert client.get(f"/auth/users/{other.id}").status_code == 404
+        res = client.post("/auth/register", json=self._new_user())
+        assert res.status_code == 201
+        assert res.json()["cluster_id"] == cluster.id
+
+
 class TestAuditEndpoint:
     def test_super_admin_only_and_filters(self, client, login_as, make_user,
                                           db_session):

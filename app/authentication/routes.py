@@ -12,7 +12,7 @@ from app.core.database import get_db
 from sqlalchemy.orm import Session
 from app.service.email_service import send_welcome_email,send_researcher_request_email,send_researcher_approved_email,send_researcher_declined_email,send_password_reset_otp_email
 from utils.protected_route import get_current_user
-from app.core.security.permissions import require_admin, require_super_admin, is_super_admin
+from app.core.security.permissions import require_admin, require_super_admin, is_super_admin, manages_cluster
 
 from app.notification.events import NotificationEvent, emit
 from app.service.user_service import UserService
@@ -150,6 +150,8 @@ def register(register_details: UserCreate, background_tasks:BackgroundTasks,
     # USERS, and they are forced into the admin's own cluster.
     try:
         if not is_super_admin(current_user):
+            if current_user.cluster_id is None:
+                raise HTTPException(status_code=403, detail="You are not assigned to a cluster")
             register_details.role = UserRole.USER
             register_details.cluster_id = current_user.cluster_id
         # Admin-created accounts are vouched for, so they skip the pending gate.
@@ -227,6 +229,10 @@ def get_users(session: Session = Depends(get_db),
               ):
     # Super admin sees everyone; a cluster admin sees only their cluster's users.
     try:
+        if not manages_cluster(current_user, current_user.cluster_id):
+            # Cluster-less non-super-admin: manages nobody. (None here would
+            # mean "unrestricted" to get_users.)
+            return Page[UserResponse](items=[], total=0, page=page, page_size=page_size, total_pages=0)
         restrict_cluster_id = None if is_super_admin(current_user) else current_user.cluster_id
         user_service = UserService(session)
         return user_service.get_users(
@@ -249,7 +255,7 @@ def get_user_by_id(user_id: int, session: Session = Depends(get_db),
     try:
         user = UserService(session).get_user_by_id(user_id)
         # A cluster admin may only view users within their own cluster.
-        if not is_super_admin(current_user) and user.cluster_id != current_user.cluster_id:
+        if not manages_cluster(current_user, user.cluster_id):
             raise HTTPException(status_code=404, detail="User not found")
         return user
     except Exception as e:
@@ -265,7 +271,7 @@ def update_user(user_id: int, update_data: UserUpdate, session: Session = Depend
         existing = service.get_user_by_id(user_id)
         if not is_super_admin(current_user):
             # Cluster admins manage only their own cluster's users…
-            if existing.cluster_id != current_user.cluster_id:
+            if not manages_cluster(current_user, existing.cluster_id):
                 raise HTTPException(status_code=404, detail="User not found")
             # …may not promote anyone to super admin…
             if update_data.role == UserRole.SUPER_ADMIN:
@@ -335,19 +341,23 @@ def update_researcher_request_status(request_id: int, status: str, background_ta
         elif normalized_status == "rejected":
             background_tasks.add_task(send_researcher_declined_email, researcher_request.user.email, researcher_request.user.first_name)
             emit(session, NotificationEvent.RESEARCHER_REQUEST_REJECTED, user=researcher_request.user)
+        detail = {"status": normalized_status}
+        revoked = researcher_request_service.researcher_request_repository.revoked_cluster_id
+        if revoked is not None:
+            detail["revoked_cluster_id"] = revoked
         audit(session, AuditAction.RESEARCHER_REQUEST_DECIDED,
               actor_user_id=current_user.id, actor_email=current_user.email,
               target_type="researcher_request", target_id=request_id,
-              detail={"status": normalized_status})
+              detail=detail)
         return researcher_request
     except Exception as e:
         raise e
 
 
 
-@router.patch("/researcher-requests/{request_id}",status_code=status.HTTP_200_OK,response_model=ResearcherRequestResponse,
-              dependencies=[Depends(require_super_admin)])
-def update_researcher_request(request_id: int, request_data: UpdateResearcherRequest, background_tasks:BackgroundTasks,session: Session = Depends(get_db)):
+@router.patch("/researcher-requests/{request_id}",status_code=status.HTTP_200_OK,response_model=ResearcherRequestResponse)
+def update_researcher_request(request_id: int, request_data: UpdateResearcherRequest, background_tasks:BackgroundTasks,session: Session = Depends(get_db),
+                              current_user: UserResponse = Depends(require_super_admin)):
     try:
         researcher_request_service = ResearcherRequestService(session)
         researcher_request=researcher_request_service.update_reseacher_request(request_id, request_data)
@@ -373,6 +383,15 @@ def update_researcher_request(request_id: int, request_data: UpdateResearcherReq
         elif normalized_status == "rejected":
             background_tasks.add_task(send_researcher_declined_email, researcher_request.user.email, researcher_request.user.first_name)
             emit(session, NotificationEvent.RESEARCHER_REQUEST_REJECTED, user=researcher_request.user)
+        if normalized_status:
+            detail = {"status": normalized_status}
+            revoked = researcher_request_service.researcher_request_repository.revoked_cluster_id
+            if revoked is not None:
+                detail["revoked_cluster_id"] = revoked
+            audit(session, AuditAction.RESEARCHER_REQUEST_DECIDED,
+                  actor_user_id=current_user.id, actor_email=current_user.email,
+                  target_type="researcher_request", target_id=request_id,
+                  detail=detail)
         return researcher_request
     except Exception as e:
         raise e

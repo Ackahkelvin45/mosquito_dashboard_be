@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
     model = ResearcherRequest
+    # Set by the status updates: cluster id whose membership a rejection
+    # revoked (None otherwise), so the route can put it in the audit row.
+    revoked_cluster_id: int | None = None
 
     def get_researcher_requests(self) -> list[ResearcherRequest]:
         return (
@@ -72,6 +75,38 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
 
         return cluster
 
+    def _revoke_cluster_access(self, request: ResearcherRequest, approved_cluster_id: int | None,
+                               new_status: ResearcherRequestStatus) -> None:
+        """Approved -> pending/rejected: the access the approval granted goes.
+        Nothing records whether the approval set users.cluster_id, so clear it
+        only when it still equals the approved cluster. The user is always
+        dropped from that cluster's cluster_admins (approval always adds it;
+        else the cluster edit form re-saves the stale admin). Re-approval
+        re-adds both. The cluster itself and its devices are left alone."""
+        self.revoked_cluster_id = None
+        if request.status != ResearcherRequestStatus.APPROVED or approved_cluster_id is None:
+            return
+        user = self.session.query(User).filter(User.id == request.user_id).first()
+        if user is None:
+            return
+        cluster = self.session.get(DeviceCluster, approved_cluster_id)
+        if cluster is not None and user in cluster.cluster_admins:
+            cluster.cluster_admins.remove(user)
+        if user.cluster_id == approved_cluster_id:
+            user.cluster_id = None
+            self.revoked_cluster_id = approved_cluster_id
+            logger.warning(
+                "Researcher request %s moved from approved to %s: user %s removed "
+                "from cluster %s",
+                request.id, new_status, user.id, approved_cluster_id,
+            )
+        elif user.cluster_id is not None:
+            logger.warning(
+                "Researcher request %s moved from approved to %s for cluster %s but "
+                "user %s stays in cluster %s (not the request's cluster)",
+                request.id, new_status, approved_cluster_id, user.id, user.cluster_id,
+            )
+
     def create_researcher_request(self, request_data: ResearcherRequestCreate) -> ResearcherRequest:
 
         if  self.session.query(ResearcherRequest).filter(ResearcherRequest.user_id == request_data.user_id).first():
@@ -104,8 +139,11 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid status value")
 
+        self.revoked_cluster_id = None
         if status_enum == ResearcherRequestStatus.APPROVED:
             self._ensure_cluster_for_request(request)
+        else:
+            self._revoke_cluster_access(request, request.cluster_id, status_enum)
 
         request.status = status_enum
         self.session.commit()
@@ -119,12 +157,12 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
         if not request:
             raise HTTPException(status_code=404, detail=f"Researcher request with id {request_id} not found")
 
-        # Cluster first: approval below attaches the user to request.cluster_id.
-        if request_data.cluster_id is not None:
-            if self.session.query(DeviceCluster).filter(DeviceCluster.id == request_data.cluster_id).first() is None:
-                raise HTTPException(status_code=404, detail=f"Cluster with id {request_data.cluster_id} not found")
-            request.cluster_id = request_data.cluster_id
+        self.revoked_cluster_id = None
+        # Revocation must match the cluster that was approved, not one this
+        # PATCH swaps in.
+        approved_cluster_id = request.cluster_id
 
+        status_enum = None
         if request_data.status is not None:
             try:
                 normalized_status = request_data.status.strip().lower()
@@ -134,8 +172,31 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
             except Exception:
                 raise HTTPException(status_code=400, detail="Invalid status value")
 
+        # Moving an approved request's cluster while it stays approved would
+        # leave the user in the old cluster and make a later rejection revoke
+        # nothing. Allowed only together with a move away from approved (the
+        # revoke below then targets the OLD cluster).
+        if (request_data.cluster_id is not None
+                and request.status == ResearcherRequestStatus.APPROVED
+                and request_data.cluster_id != request.cluster_id
+                and status_enum in (None, ResearcherRequestStatus.APPROVED)):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change the cluster of an approved request; set status "
+                       "to rejected or pending in the same request",
+            )
+
+        # Cluster first: approval below attaches the user to request.cluster_id.
+        if request_data.cluster_id is not None:
+            if self.session.query(DeviceCluster).filter(DeviceCluster.id == request_data.cluster_id).first() is None:
+                raise HTTPException(status_code=404, detail=f"Cluster with id {request_data.cluster_id} not found")
+            request.cluster_id = request_data.cluster_id
+
+        if status_enum is not None:
             if status_enum == ResearcherRequestStatus.APPROVED:
                 self._ensure_cluster_for_request(request)
+            else:
+                self._revoke_cluster_access(request, approved_cluster_id, status_enum)
 
             request.status = status_enum
 
