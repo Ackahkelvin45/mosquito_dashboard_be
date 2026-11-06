@@ -170,23 +170,10 @@ def _load_for_edit(session: Session, user: UserResponse, count_id: int) -> Manua
     return row
 
 
-# ── Routes ───────────────────────────────────────────────────────────────────
-
-@router.get("", response_model=list[CollectionComparison])
-def list_collections(
-    device_id: Optional[int] = Query(default=None),
-    session: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
-):
-    """Every manual collection in scope, newest first, each compared to the AI."""
-    q = session.query(ManualTrapCount, Device).join(Device, Device.id == ManualTrapCount.device_id)
-    visible = visible_cluster_ids(session, current_user)
-    if visible is not None:
-        q = q.filter(Device.cluster_id.in_(visible))
-    if device_id is not None:
-        q = q.filter(ManualTrapCount.device_id == device_id)
-    rows = q.order_by(ManualTrapCount.period_end.desc(), ManualTrapCount.id).all()
-
+def compare_collections(session: Session, rows: list) -> list[CollectionComparison]:
+    """Group (ManualTrapCount, Device) rows into collections and compare each
+    with the live AI detections over the same half-open period. Keeps the
+    order of `rows`. Shared with /model-performance."""
     collections: dict = {}
     for row, device in rows:
         key = (row.device_id, row.period_start, row.period_end)
@@ -219,6 +206,25 @@ def list_collections(
                             for g, s in keys if (g, s) not in manual and ai.get((g, s))],
         ))
     return result
+
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+
+@router.get("", response_model=list[CollectionComparison])
+def list_collections(
+    device_id: Optional[int] = Query(default=None),
+    session: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Every manual collection in scope, newest first, each compared to the AI."""
+    q = session.query(ManualTrapCount, Device).join(Device, Device.id == ManualTrapCount.device_id)
+    visible = visible_cluster_ids(session, current_user)
+    if visible is not None:
+        q = q.filter(Device.cluster_id.in_(visible))
+    if device_id is not None:
+        q = q.filter(ManualTrapCount.device_id == device_id)
+    rows = q.order_by(ManualTrapCount.period_end.desc(), ManualTrapCount.id).all()
+    return compare_collections(session, rows)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=list[ManualCountResponse])
