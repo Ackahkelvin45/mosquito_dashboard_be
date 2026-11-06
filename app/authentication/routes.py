@@ -19,7 +19,7 @@ from app.service.user_service import UserService
 from app.service.reseacher_request_service import ResearcherRequestService
 from fastapi import status
 from app.device.models import DeviceCluster
-from app.authentication.enums import UserRole, ApprovalStatus
+from app.authentication.enums import UserRole, ApprovalStatus, ResearcherRequestStatus
 
 
 
@@ -225,6 +225,7 @@ def get_users(session: Session = Depends(get_db),
               name: str = None,
               role: str = None,
               approval_status: str = None,
+              search: Optional[str] = Query(default=None, description="Matches first name, last name or email"),
               current_user: UserResponse = Depends(require_admin),
               ):
     # Super admin sees everyone; a cluster admin sees only their cluster's users.
@@ -243,6 +244,7 @@ def get_users(session: Session = Depends(get_db),
             role=role,
             approval_status=approval_status,
             restrict_cluster_id=restrict_cluster_id,
+            search=search,
         )
     except Exception as e:
         raise e
@@ -295,10 +297,13 @@ def update_user(user_id: int, update_data: UserUpdate, session: Session = Depend
             dependencies=[Depends(require_super_admin)])
 def get_researcher_requests(session: Session = Depends(get_db),
                             page: int = Query(default=1, ge=1),
-                            page_size: int = Query(default=20, ge=1, le=100)):
+                            page_size: int = Query(default=20, ge=1, le=100),
+                            status: Optional[ResearcherRequestStatus] = None,
+                            search: Optional[str] = Query(default=None, description="Matches applicant first name, last name or email")):
     try:
         researcher_request_service = ResearcherRequestService(session)
-        return researcher_request_service.get_reseachers_requests(page=page, page_size=page_size)
+        return researcher_request_service.get_reseachers_requests(page=page, page_size=page_size,
+                                                                   status=status, search=search)
     except Exception as e:
         raise e
 

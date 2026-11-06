@@ -32,8 +32,12 @@ class UserRepository(BaseRepository[User]):
     def get_all_users(self) -> list[User]:
         return self.session.query(User).order_by(User.id).all()
     
-    def filter_users(self, email: str = None, name: str = None, role: str = None, approval_status: str = None) -> list[User]:
+    def filter_users(self, email: str = None, name: str = None, role: str = None, approval_status: str = None,
+                     search: str = None) -> list[User]:
         query = self.session.query(User)
+        if search:
+            like = f"%{search}%"
+            query = query.filter(User.first_name.ilike(like) | User.last_name.ilike(like) | User.email.ilike(like))
         if email is not None:
             query = query.filter(User.email == email)
         if name is not None:

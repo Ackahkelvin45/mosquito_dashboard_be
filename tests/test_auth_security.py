@@ -4,6 +4,7 @@ refresh hardening."""
 from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import text
 from fastapi import FastAPI
 
 import app.service.user_service as user_service_module
@@ -259,6 +260,84 @@ class TestResearcherRbac:
                                 ).status_code == 403
         login_as(make_user(role=UserRole.SUPER_ADMIN))
         assert client.get("/auth/researcher-requests").status_code == 200
+
+
+class TestListFilters:
+    """Query params behind the Users / Researcher Requests search + status UI."""
+
+    def test_users_search_role_status_filters(self, client, login_as, make_user):
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        ama = make_user(first_name="Ama", last_name="Mensah", email="ama.filters@example.com")
+        kofi = make_user(role=UserRole.ADMIN, first_name="Kofi", last_name="Boateng",
+                         email="kb.filters@example.com", approval_status=ApprovalStatus.PENDING)
+
+        def ids(qs):
+            res = client.get(f"/auth/users?page_size=100&{qs}")
+            assert res.status_code == 200
+            return {u["id"] for u in res.json()["items"]}
+
+        assert ids("search=mensah") == {ama.id}            # last name, case-insensitive
+        assert ids("search=KB.FILTERS@") == {kofi.id}      # email substring
+        assert kofi.id in ids("role=ADMIN") and ama.id not in ids("role=ADMIN")
+        assert kofi.id in ids("approval_status=PENDING") and ama.id not in ids("approval_status=PENDING")
+        assert ids("search=filters&role=USER") == {ama.id}
+
+    def test_users_search_case_insensitive_under_case_sensitive_like(self, client, login_as, db_session, make_user):
+        # SQLite's LIKE ignores ASCII case, which would hide ilike -> like.
+        if db_session.bind.dialect.name != "sqlite":
+            pytest.skip("Postgres LIKE is already case-sensitive")
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        ama = make_user(last_name="Mensah")
+        db_session.execute(text("PRAGMA case_sensitive_like = ON"))
+        try:
+            items = client.get("/auth/users?search=mensah").json()["items"]
+        finally:
+            db_session.execute(text("PRAGMA case_sensitive_like = OFF"))
+        assert [u["id"] for u in items] == [ama.id]
+
+    def test_users_filters_keep_cluster_admin_scope(self, client, login_as, make_user, make_cluster):
+        mine, other = make_cluster(), make_cluster()
+        member = make_user(cluster_id=mine.id, last_name="Scoped")
+        make_user(cluster_id=other.id, last_name="Scoped")
+        make_user(last_name="Scoped")  # cluster-less
+        login_as(make_user(role=UserRole.ADMIN, cluster_id=mine.id))
+
+        body = client.get("/auth/users?search=scoped&role=USER").json()
+        assert [u["id"] for u in body["items"]] == [member.id]
+        assert body["total"] == 1
+
+    def _request(self, db_session, user, status=None):
+        repo = ResearcherRequestRepository(db_session)
+        request = repo.create_researcher_request(ResearcherRequestCreate(user_id=user.id))
+        if status:
+            repo.update_researcher_request_status(request.id, status)
+        return request
+
+    def test_researcher_requests_status_and_search(self, client, login_as, db_session, make_user):
+        pending = self._request(db_session, make_user(first_name="Esi", email="esi.rr@example.com"))
+        rejected = self._request(db_session, make_user(first_name="Yaw", email="yaw.rr@example.com"),
+                                 status="rejected")
+
+        for role in (UserRole.USER, UserRole.ADMIN):
+            login_as(make_user(role=role))
+            assert client.get("/auth/researcher-requests?status=pending").status_code == 403
+            assert client.get("/auth/researcher-requests?search=esi").status_code == 403
+
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+
+        def ids(qs):
+            res = client.get(f"/auth/researcher-requests?page_size=100&{qs}")
+            assert res.status_code == 200
+            return {r["id"] for r in res.json()["items"]}
+
+        assert ids("") == {pending.id, rejected.id}
+        assert ids("status=pending") == {pending.id}
+        assert ids("status=rejected") == {rejected.id}
+        assert ids("status=approved") == set()
+        assert ids("search=ESI") == {pending.id}
+        assert ids("search=yaw.rr@") == {rejected.id}
+        assert ids("search=esi&status=rejected") == set()
+        assert client.get("/auth/researcher-requests?status=bogus").status_code == 422
 
 
 class TestResearcherApprovalMembership:

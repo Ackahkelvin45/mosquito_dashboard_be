@@ -14,8 +14,10 @@ class ResearcherRequestService:
         self.session = session
         self.researcher_request_repository = ResearcherRequestRepository(session)
 
-    def get_reseachers_requests(self, page: int = 1, page_size: int = 20) -> Page[ResearcherRequestResponse]:
-        requests = self.researcher_request_repository.get_researcher_requests()
+    def get_reseachers_requests(self, page: int = 1, page_size: int = 20,
+                                status: ResearcherRequestStatus | None = None,
+                                search: str | None = None) -> Page[ResearcherRequestResponse]:
+        requests = self.researcher_request_repository.get_researcher_requests(status=status, search=search)
         sliced, total, total_pages = paginate(requests, page, page_size)
         return Page[ResearcherRequestResponse](
             items=[ResearcherRequestResponse.model_validate(r) for r in sliced],

@@ -21,14 +21,19 @@ class ResearcherRequestRepository(BaseRepository[ResearcherRequest]):
     # revoked (None otherwise), so the route can put it in the audit row.
     revoked_cluster_id: int | None = None
 
-    def get_researcher_requests(self) -> list[ResearcherRequest]:
-        return (
+    def get_researcher_requests(self, status: ResearcherRequestStatus | None = None,
+                                search: str | None = None) -> list[ResearcherRequest]:
+        query = (
             self.session.query(ResearcherRequest)
             .join(ResearcherRequest.user)
             .options(joinedload(ResearcherRequest.user))
-            .order_by(ResearcherRequest.id)
-            .all()
         )
+        if status is not None:
+            query = query.filter(ResearcherRequest.status == status)
+        if search:
+            like = f"%{search}%"
+            query = query.filter(User.first_name.ilike(like) | User.last_name.ilike(like) | User.email.ilike(like))
+        return query.order_by(ResearcherRequest.id).all()
 
     def _generate_cluster_name(self, user: User) -> str:
         base = f"{user.first_name}-{user.last_name}-{user.id}".strip().lower()

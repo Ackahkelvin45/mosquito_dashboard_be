@@ -416,9 +416,11 @@ class UserService:
                   role: str = None,
                   approval_status: str = None,
                   restrict_cluster_id: int = None,
+                  search: str = None,
                   ) -> Page[UserResponse]:
-        if any(v is not None for v in [email, name, role, approval_status]):
-            users = self.user_repository.filter_users(email=email, name=name, role=role, approval_status=approval_status)
+        if any(v is not None for v in [email, name, role, approval_status, search]):
+            users = self.user_repository.filter_users(email=email, name=name, role=role,
+                                                      approval_status=approval_status, search=search)
         else:
             users = self.user_repository.get_all_users()
 
