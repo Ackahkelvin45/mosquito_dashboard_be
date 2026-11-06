@@ -5,7 +5,8 @@ Format = the public API export (GET /api/v1/export?format=csv) for the same
 dataset: same column names, raw values, ISO-8601 UTC timestamps. The
 informational columns (id, device_name, region, community, cluster_id) may be
 present and are ignored — the device is identified by device_uuid alone, and
-ids are assigned fresh. battery_pct / p_mosq were added to the export later and
+ids are assigned fresh. So are excluded / exclusion_reason: an exclusion is
+never imported (there is no excluder), the imported row is included. battery_pct / p_mosq were added to the export later and
 are optional, so older exports still import (absent or empty → NULL).
 
 The body is the raw CSV (Content-Type: text/csv), not multipart: FastAPI's
@@ -57,7 +58,11 @@ SENSOR = "sensor-readings"
 MOSQUITO = "mosquito-events"
 
 # Export columns that describe the device or the row's old id, not the reading.
-IGNORED_COLUMNS = {"id", "device_name", "region", "community", "cluster_id"}
+# excluded / exclusion_reason are ignored too: an exclusion is an admin's
+# decision on the stored row (who, when, why), not data — an imported row is
+# always included, and older files without these columns still import.
+IGNORED_COLUMNS = {"id", "device_name", "region", "community", "cluster_id",
+                   "excluded", "exclusion_reason"}
 # Export columns that older exports lack: accepted when present, NULL when not.
 # In the duplicate check a blank file cell matches any stored value (so an older
 # file re-imported over rows that carry these values is still a duplicate); a
@@ -199,7 +204,9 @@ def _mosquito_key(device_id, timestamp, count, detection_ts, species, genus, age
 
 
 def _existing_keys(session: Session, kind: str, pairs: list[tuple[int, datetime]]) -> Counter:
-    """Multiset of live rows already stored at the given (device_id, timestamp) pairs."""
+    """Multiset of live rows already stored at the given (device_id, timestamp) pairs.
+    Excluded rows count as stored (LIVE_*, not ANALYSIS_*), so re-importing an
+    export never re-adds a row an admin excluded."""
     keys: Counter = Counter()
     for i in range(0, len(pairs), _CHUNK):
         chunk = pairs[i:i + _CHUNK]
@@ -493,11 +500,17 @@ def delete_import(import_id: int, session: Session = Depends(get_db),
     if batch is None:
         raise HTTPException(404, "Import not found")
 
-    # Reverse total_mosquito_count by the detections this batch added.
+    # Lock the batch's events first (no-op on SQLite) so a concurrent
+    # exclude/include can't change excluded_at between the count below and
+    # the delete.
+    session.query(MosquitoEvent.id).filter(
+        MosquitoEvent.import_batch_id == batch.id).with_for_update().all()
+    # Reverse total_mosquito_count by the detections this batch added —
+    # minus those an admin excluded since (excluding already subtracted them).
     per_device = (
         session.query(MosquitoEvent.device_id, MosquitoIndividualReading.id)
         .join(MosquitoIndividualReading, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
-        .filter(MosquitoEvent.import_batch_id == batch.id)
+        .filter(MosquitoEvent.import_batch_id == batch.id, MosquitoEvent.excluded_at.is_(None))
         .all()
     )
     detections = Counter(device_id for device_id, _ in per_device)

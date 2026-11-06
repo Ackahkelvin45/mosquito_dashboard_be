@@ -148,8 +148,29 @@ class SensorDataResponse(BaseModel):
     battery_pct: Optional[int] = None
     trap_status: Optional[bool] = False
     esp1_link_alive: Optional[bool] = None
+    # Admin exclusion flag (row is kept and listed; left out of analysis).
+    excluded_at: Optional[datetime] = None
+    exclusion_reason: Optional[str] = None
+    # Filled only for viewers who manage the device's cluster (see
+    # DeviceService._fill_excluder_names); null for everyone else.
+    excluded_by_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+EXCLUSION_REASON_MAX = 500  # = the exclusion_reason column length
+
+
+class ExclusionRequest(BaseModel):
+    reason: str = Field(..., max_length=EXCLUSION_REASON_MAX, description="Why the row is excluded (required)")
+
+    @field_validator("reason")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("reason must not be blank")
+        return v
 
 
 class SensorReadingWithDeviceResponse(SensorDataResponse):
@@ -157,6 +178,7 @@ class SensorReadingWithDeviceResponse(SensorDataResponse):
     device_uuid: Optional[str] = None
     device_name: Optional[str] = None
     region: Optional[str] = None
+    cluster_id: Optional[int] = None
 
 
 class DeviceResponse(DeviceBase):
@@ -273,10 +295,16 @@ class MosquitoEventResponse(BaseModel):
     device_id: int = Field(..., description="ID of the device")
     timestamp: datetime = Field(..., description="When the event batch was recorded")
     count: int = Field(..., description="Number of mosquitoes detected in this event")
+    device_uuid: Optional[str] = None
+    cluster_id: Optional[int] = Field(None, description="The device's cluster")
     mosquito_reading: Optional[MosquitoIndividualResponse] = Field(
         default=None,
         description="The single mosquito reading for this event",
     )
+    # Admin exclusion flag (row is kept and listed; left out of analysis).
+    excluded_at: Optional[datetime] = None
+    exclusion_reason: Optional[str] = None
+    excluded_by_name: Optional[str] = None  # managers only, as above
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -4,7 +4,9 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import List, Optional
 
+from app.authentication.models import User
 from app.core.pagination import Page, paginate
+from app.device.models import MosquitoEvent
 from app.device.repository.device_repository import DeviceRepository
 from app.device.sightings import clear_sighting
 from app.notification.events import NotificationEvent, emit
@@ -31,6 +33,24 @@ class DeviceService:
             return
         if device is None or device.cluster_id not in allowed_cluster_ids:
             raise HTTPException(status_code=404, detail="Device not found")
+
+    def _fill_excluder_names(self, pairs, managed_cluster_ids: Optional[set]) -> None:
+        """pairs: (response item, ORM row, device cluster_id). Sets
+        excluded_by_name only where the viewer manages the cluster (None =
+        all) — guests/public viewers never learn who excluded a row. One
+        users query per page, not per row."""
+        shown = [(item, row) for item, row, cluster in pairs
+                 if row.excluded_by_user_id is not None
+                 and (managed_cluster_ids is None or cluster in managed_cluster_ids)]
+        if not shown:
+            return
+        names = {
+            uid: f"{first or ''} {last or ''}".strip() or None
+            for uid, first, last in self.session.query(User.id, User.first_name, User.last_name)
+            .filter(User.id.in_({row.excluded_by_user_id for _, row in shown}))
+        }
+        for item, row in shown:
+            item.excluded_by_name = names.get(row.excluded_by_user_id)
 
     def create_device(self, device_data: DeviceCreate) -> DeviceResponse:
         if (
@@ -142,15 +162,18 @@ class DeviceService:
         return SensorDataResponse.model_validate(reading)
 
     def get_sensor_readings(self, device_uuid: str, page: int = 1, page_size: int = 20,
-                            allowed_cluster_ids: Optional[set] = None) -> Page[SensorDataResponse]:
+                            allowed_cluster_ids: Optional[set] = None,
+                            managed_cluster_ids: Optional[set] = frozenset()) -> Page[SensorDataResponse]:
         device = self.device_repository.get_by_uuid(device_uuid)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found")
         self._assert_scope(device, allowed_cluster_ids)
         readings = self.device_repository.get_sensor_readings(device.id)
         sliced, total, total_pages = paginate(readings, page, page_size)
+        items = [SensorDataResponse.model_validate(r) for r in sliced]
+        self._fill_excluder_names([(i, r, device.cluster_id) for i, r in zip(items, sliced)], managed_cluster_ids)
         return Page[SensorDataResponse](
-            items=[SensorDataResponse.model_validate(r) for r in sliced],
+            items=items,
             total=total, page=page, page_size=page_size, total_pages=total_pages,
         )
 
@@ -165,6 +188,7 @@ class DeviceService:
         device_uuids: List[str] | None = None,
         cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
+        managed_cluster_ids: Optional[set] = frozenset(),
     ) -> Page[SensorReadingWithDeviceResponse]:
         rows, total = self.device_repository.get_sensor_readings_page(
             page=page, page_size=page_size,
@@ -180,7 +204,9 @@ class DeviceService:
                 item.device_uuid = r.device.device_uuid
                 item.device_name = r.device.name
                 item.region = r.device.region
+                item.cluster_id = r.device.cluster_id
             items.append(item)
+        self._fill_excluder_names([(i, r, i.cluster_id) for i, r in zip(items, rows)], managed_cluster_ids)
         return Page[SensorReadingWithDeviceResponse](
             items=items, total=total, page=page, page_size=page_size, total_pages=total_pages,
         )
@@ -206,6 +232,7 @@ class DeviceService:
         end_date: datetime | None = None,
         search: str | None = None,
         allowed_cluster_ids: Optional[set] = None,
+        managed_cluster_ids: Optional[set] = frozenset(),
     ) -> Page[MosquitoEventResponse]:
         device = self.device_repository.get_by_uuid(device_uuid)
         if not device:
@@ -217,10 +244,14 @@ class DeviceService:
             end_date=end_date,
             search=search,
         )
+        return self._event_page(events, page, page_size, managed_cluster_ids)
+
+    def _event_page(self, events, page, page_size, managed_cluster_ids) -> Page[MosquitoEventResponse]:
         sliced, total, total_pages = paginate(events, page, page_size)
+        items = [MosquitoEventResponse.model_validate(event) for event in sliced]
+        self._fill_excluder_names([(i, e, i.cluster_id) for i, e in zip(items, sliced)], managed_cluster_ids)
         return Page[MosquitoEventResponse](
-            items=[MosquitoEventResponse.model_validate(event) for event in sliced],
-            total=total, page=page, page_size=page_size, total_pages=total_pages,
+            items=items, total=total, page=page, page_size=page_size, total_pages=total_pages,
         )
 
     def get_mosquito_filter_options(self, allowed_cluster_ids: Optional[set] = None) -> dict:
@@ -239,6 +270,7 @@ class DeviceService:
         species: str | List[str] | None = None,
         cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
+        managed_cluster_ids: Optional[set] = frozenset(),
     ) -> Page[MosquitoEventResponse]:
         events = self.device_repository.get_all_mosquito_events(
             start_date=start_date,
@@ -251,11 +283,7 @@ class DeviceService:
             cluster_id=cluster_id,
             allowed_cluster_ids=allowed_cluster_ids,
         )
-        sliced, total, total_pages = paginate(events, page, page_size)
-        return Page[MosquitoEventResponse](
-            items=[MosquitoEventResponse.model_validate(event) for event in sliced],
-            total=total, page=page, page_size=page_size, total_pages=total_pages,
-        )
+        return self._event_page(events, page, page_size, managed_cluster_ids)
 
     def delete_mosquito_event(self, device_uuid: str, event_id: int,
                               allowed_cluster_ids: Optional[set] = None) -> None:
@@ -265,6 +293,21 @@ class DeviceService:
         self._assert_scope(device, allowed_cluster_ids)
         self.device_repository.delete_mosquito_event(device_id=device.id, event_id=event_id)
 
+
+    def set_exclusion(self, model, device_uuid: str, row_id: int, user_id: int,
+                      reason: Optional[str], allowed_cluster_ids: Optional[set] = None):
+        """Exclude (reason) / include (None) a reading or event. The caller
+        manages the device (allowed_cluster_ids is their managed scope), so
+        the response carries the excluder's name."""
+        device = self.device_repository.get_by_uuid(device_uuid)
+        if not device:
+            raise HTTPException(status_code=404, detail="Device not found")
+        self._assert_scope(device, allowed_cluster_ids)
+        row = self.device_repository.set_exclusion(model, device.id, row_id, user_id, reason)
+        schema = MosquitoEventResponse if model is MosquitoEvent else SensorDataResponse
+        item = schema.model_validate(row)
+        self._fill_excluder_names([(item, row, device.cluster_id)], None)
+        return item
 
     def get_all_mosquito_readings(self) -> List[MosquitoIndividualResponse]:
         readings = self.device_repository.get_all_mosquito_readings()

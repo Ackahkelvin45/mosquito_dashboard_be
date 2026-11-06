@@ -31,8 +31,8 @@ owner, or changing their cluster takes effect immediately.
 
 | Endpoint | Data | Pagination |
 |---|---|---|
-| `GET /api/v1/sensor-readings` | Environmental sensor readings incl. `battery_pct` (0-100) (with device context) | Cursor |
-| `GET /api/v1/mosquito-events` | Mosquito detections incl. species/genus/sex/age and model confidence `p_mosq` (raw 0-1) | Cursor |
+| `GET /api/v1/sensor-readings` | Environmental sensor readings incl. `battery_pct` (0-100) (with device context) and the `excluded` flag | Cursor |
+| `GET /api/v1/mosquito-events` | Mosquito detections incl. species/genus/sex/age, model confidence `p_mosq` (raw 0-1) and the `excluded` flag | Cursor |
 | `GET /api/v1/devices` | Device metadata & location | Page |
 | `GET /api/v1/clusters` | Clusters visible to your key | Page |
 | `GET /api/v1/export` | Full filtered dataset as CSV / JSONL stream | — (streams) |
@@ -130,9 +130,18 @@ while True:
 - CSV columns are in a fixed, documented order (the `fields=` order of the
   dataset). Empty cells are NULLs. Text cells beginning with `= + - @` are
   prefixed with `'` to disarm spreadsheet formula injection.
-- `battery_pct` (sensor-readings) and `p_mosq` (mosquito-events) are the last
-  columns; they were appended later, so files exported before them lack them.
-  The dashboard's CSV import accepts files with or without these two columns.
+- `battery_pct` (sensor-readings) and `p_mosq` (mosquito-events) were
+  appended later, so files exported before them lack them. The dashboard's
+  CSV import accepts files with or without these two columns.
+- `excluded` and `exclusion_reason` are the LAST two columns of
+  sensor-readings and mosquito-events (in the list endpoints too). An admin
+  may exclude a bad reading or detection from analysis: the row is still
+  returned unchanged, with `excluded` = `True` (CSV) / `true` (JSON) and the
+  admin's reason; for an included row both are blank / `null`. Excluded rows
+  are left out of every dashboard chart, total, report and comparison, so
+  drop them before your own analysis (e.g. `excluded != True`). The CSV
+  import accepts these columns but ignores them: imported rows are always
+  included, and files without them still import.
 
 ## Rate limits
 

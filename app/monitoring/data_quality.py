@@ -7,7 +7,9 @@ it never alters or fills a value.
 
 Every figure is a handful of GROUP BY queries over the whole scope (no
 per-device queries). Only live rows count (LIVE_SENSOR_READING /
-LIVE_MOSQUITO_EVENT); test-mode readings are reported separately.
+LIVE_MOSQUITO_EVENT); test-mode readings are reported separately. Rows an
+admin excluded from analysis DO count here — this reports what the device
+sent — and are also counted separately (excluded_readings/_detections).
 """
 from datetime import datetime, timedelta
 from typing import Optional
@@ -103,6 +105,7 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
             _count_if(or_(temperature < limits.temp_min, temperature > limits.temp_max)),
             _count_if(or_(humidity < limits.humidity_min, humidity > limits.humidity_max)),
             _count_if(or_(SensorDeviceReading.battery_pct < 0, SensorDeviceReading.battery_pct > 100)),
+            _count_if(SensorDeviceReading.excluded_at.isnot(None)),
             *[func.count(col) for col in NULL_FIELDS.values()],
         )
         .filter(in_window, LIVE_SENSOR_READING)
@@ -178,6 +181,7 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
             _count_if(p.is_(None)),
             _count_if(genus_missing),
             _count_if(or_(p < 0, p > 1)),
+            _count_if(MosquitoEvent.excluded_at.isnot(None)),
         )
         .outerjoin(MosquitoIndividualReading, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
         .filter(
@@ -192,7 +196,7 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
     detections = {row[0]: row[1:] for row in detection_rows}
 
     for d in devices:
-        total, last_at, temp_oor, hum_oor, batt_oor, *non_null = sensor.get(d.id, (0, None, 0, 0, 0))
+        total, last_at, temp_oor, hum_oor, batt_oor, excl, *non_null = sensor.get(d.id, (0, None, 0, 0, 0, 0))
         longest, over = gaps.get(d.id, (None, None))
         if longest is not None:
             longest = float(longest)  # Postgres EXTRACT returns numeric
@@ -203,12 +207,13 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
             longest = max(longest or 0.0, ongoing)
         measured, avg_d, min_d, max_d, delayed = delays.get(d.id, (0, None, None, None, 0))
         delay_s = lambda v: round(float(v), 1) if v is not None else None  # noqa: E731
-        det_total, det_no_p, det_no_genus, det_p_oor = detections.get(d.id, (0, 0, 0, 0))
+        det_total, det_no_p, det_no_genus, det_p_oor, det_excl = detections.get(d.id, (0, 0, 0, 0, 0))
         report.devices.append(DataQualityDevice(
             device_id=d.id, device_uuid=d.device_uuid, name=d.name,
             cluster_id=d.cluster_id, region=d.region,
             total_readings=total,
             test_readings=test_counts.get(d.id, 0),
+            excluded_readings=excl,
             last_reading_at=last_at,
             null_pct=(
                 {name: round(100 * (total - present) / total, 1)
@@ -229,6 +234,7 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
             detections_missing_p_mosq=det_no_p,
             detections_missing_genus=det_no_genus,
             detections_p_mosq_out_of_range=det_p_oor,
+            excluded_detections=det_excl,
         ))
     return report
 

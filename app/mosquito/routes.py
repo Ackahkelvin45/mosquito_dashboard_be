@@ -11,7 +11,7 @@ from app.core.pagination import Page
 from app.service.device_service import DeviceService
 from utils.time_range import compute_datetime_range, TimeRange
 from app.authentication.schema import UserResponse
-from app.core.security.permissions import visible_cluster_ids
+from app.core.security.permissions import managed_cluster_ids, visible_cluster_ids
 
 
 
@@ -70,6 +70,8 @@ def get_all_mosquito_events(
             species=species,
             cluster_id=cluster_id,
             allowed_cluster_ids=allowed,
+            # Excluder names only for clusters the viewer manages.
+            managed_cluster_ids=managed_cluster_ids(current_user),
         )
     except Exception as e:
         raise e

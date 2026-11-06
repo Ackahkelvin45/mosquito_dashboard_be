@@ -25,7 +25,7 @@ from app.core.security.permissions import (
     assert_device_visible, manages_cluster, require_admin, require_roles, visible_cluster_ids,
 )
 from app.device.models import (
-    LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING, Device, MosquitoEvent,
+    ANALYSIS_MOSQUITO_EVENT, ANALYSIS_SENSOR_READING, Device, MosquitoEvent,
     MosquitoIndividualReading, SensorDeviceReading,
 )
 from app.trap_counts.models import GENERA, SEXES, ManualTrapCount
@@ -139,7 +139,7 @@ def _ai_counts(session: Session, device_id: int, start: datetime, end: datetime)
         .outerjoin(MosquitoIndividualReading, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
         .filter(MosquitoEvent.device_id == device_id,
                 MosquitoEvent.timestamp >= start, MosquitoEvent.timestamp < end,
-                LIVE_MOSQUITO_EVENT)
+                ANALYSIS_MOSQUITO_EVENT)
         .group_by(MosquitoIndividualReading.genus, MosquitoIndividualReading.sex)
         .all()
     )
@@ -154,7 +154,7 @@ def _device_reporting(session: Session, device_id: int, start: datetime, end: da
         session.query(SensorDeviceReading.id)
         .filter(SensorDeviceReading.device_id == device_id,
                 SensorDeviceReading.timestamp >= start, SensorDeviceReading.timestamp < end,
-                LIVE_SENSOR_READING)
+                ANALYSIS_SENSOR_READING)
         .exists()
     ).scalar()
 

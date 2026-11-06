@@ -25,7 +25,7 @@ from app.device.models import (
     DeviceCluster,
     MosquitoEvent,
     MosquitoIndividualReading,
-    LIVE_MOSQUITO_EVENT,
+    ANALYSIS_MOSQUITO_EVENT,
 )
 from app.notification.alert_settings import get_thresholds
 from app.notification.events import NotificationEvent, emit
@@ -80,7 +80,7 @@ def detection_stats(session, device_ids: list[int], since: datetime,
     window = [
         MosquitoEvent.device_id.in_(device_ids),
         MosquitoEvent.timestamp >= since,
-        LIVE_MOSQUITO_EVENT,
+        ANALYSIS_MOSQUITO_EVENT,
     ]
     if until is not None:
         window.append(MosquitoEvent.timestamp < until)

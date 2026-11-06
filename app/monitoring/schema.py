@@ -59,6 +59,7 @@ class DataQualityDevice(BaseModel):
 
     total_readings: int = Field(..., description="Live sensor readings in the window")
     test_readings: int = Field(..., description="Test-mode readings in the window (not counted anywhere else)")
+    excluded_readings: int = Field(0, description="Live readings in the window an admin excluded from analysis (still counted in the figures here)")
     last_reading_at: Optional[datetime] = Field(None, description="Newest live reading in the window (device clock)")
     null_pct: dict[str, Optional[float]] = Field(
         ..., description="Per sensor field: % of live readings where it was null ('no valid reading'). Null when there are no readings.")
@@ -83,6 +84,7 @@ class DataQualityDevice(BaseModel):
     detections_missing_p_mosq: int
     detections_missing_genus: int
     detections_p_mosq_out_of_range: int = Field(..., description="p_mosq outside 0-1")
+    excluded_detections: int = Field(0, description="Live mosquito events in the window an admin excluded from analysis (still counted in the figures here)")
 
 
 class DataQualityReport(BaseModel):

@@ -23,11 +23,14 @@ from app.notification.models import Notification
 from utils.protected_route import get_current_user, get_current_user_or_guest
 
 T0 = datetime(2026, 3, 1, 12, 0, 0, 123456)
-# Helpers write the pre-battery_pct/p_mosq header, i.e. an older export file.
-SENSOR_HEADER = ",".join(c for c in imports.EXPORT_COLUMNS[imports.SENSOR] if c not in imports.OPTIONAL_COLUMNS)
-MOSQUITO_HEADER = ",".join(c for c in imports.EXPORT_COLUMNS[imports.MOSQUITO] if c not in imports.OPTIONAL_COLUMNS)
-FULL_SENSOR_HEADER = ",".join(imports.EXPORT_COLUMNS[imports.SENSOR])
-FULL_MOSQUITO_HEADER = ",".join(imports.EXPORT_COLUMNS[imports.MOSQUITO])
+# Helpers write the pre-battery_pct/p_mosq/exclusion header, i.e. an older export file.
+OLDER_MISSING = imports.OPTIONAL_COLUMNS | {"excluded", "exclusion_reason"}  # = | EXCLUSION_COLUMNS
+SENSOR_HEADER = ",".join(c for c in imports.EXPORT_COLUMNS[imports.SENSOR] if c not in OLDER_MISSING)
+MOSQUITO_HEADER = ",".join(c for c in imports.EXPORT_COLUMNS[imports.MOSQUITO] if c not in OLDER_MISSING)
+# With battery_pct / p_mosq, but from before the exclusion columns.
+EXCLUSION_COLUMNS = {"excluded", "exclusion_reason"}
+FULL_SENSOR_HEADER = ",".join(c for c in imports.EXPORT_COLUMNS[imports.SENSOR] if c not in EXCLUSION_COLUMNS)
+FULL_MOSQUITO_HEADER = ",".join(c for c in imports.EXPORT_COLUMNS[imports.MOSQUITO] if c not in EXCLUSION_COLUMNS)
 
 
 @pytest.fixture

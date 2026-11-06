@@ -55,6 +55,14 @@ def manages_cluster(user: UserResponse, cluster_id: Optional[int]) -> bool:
     return user.cluster_id is not None and cluster_id == user.cluster_id
 
 
+def managed_cluster_ids(user: UserResponse) -> Optional[set[int]]:
+    """manages_cluster as a set, for filtering in SQL / in bulk: None = all
+    (super admin), else the own cluster, or nothing when cluster-less (guest)."""
+    if is_super_admin(user):
+        return None
+    return {user.cluster_id} if user.cluster_id is not None else set()
+
+
 def is_guest(user: UserResponse) -> bool:
     return user.role == UserRole.GUEST
 

@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.authentication.schema import UserResponse
 from app.core.database import get_db
 from app.core.security.permissions import visible_cluster_ids
-from app.device.models import LIVE_MOSQUITO_EVENT, Device, MosquitoEvent, MosquitoIndividualReading
+from app.device.models import ANALYSIS_MOSQUITO_EVENT, Device, MosquitoEvent, MosquitoIndividualReading
 from app.monitoring.data_quality import _count_if
 from app.trap_counts.models import ManualTrapCount
 from app.trap_counts.routes import compare_collections, require_member
@@ -179,7 +179,7 @@ def _confidence(session: Session, scope: Optional[set[int]], start: datetime, en
             .select_from(MosquitoEvent)
             .join(Device, Device.id == MosquitoEvent.device_id)
             .outerjoin(R, R.batch_id == MosquitoEvent.id)  # no reading row → every value missing
-            .filter(MosquitoEvent.timestamp >= start, MosquitoEvent.timestamp <= end, LIVE_MOSQUITO_EVENT)
+            .filter(MosquitoEvent.timestamp >= start, MosquitoEvent.timestamp <= end, ANALYSIS_MOSQUITO_EVENT)
         )
         return q.filter(Device.cluster_id.in_(scope)) if scope is not None else q
 

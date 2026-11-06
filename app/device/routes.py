@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, Query, BackgroundTasks, HTTPException
 from fastapi.security import HTTPBearer
-from app.device.models import Device, UnregisteredDeviceSighting
+from app.device.models import Device, MosquitoEvent, SensorDeviceReading, UnregisteredDeviceSighting
 from app.device.schema import (
     DeviceCreate, DeviceResponse, DeviceUpdate,
     DeviceClusterCreate, DeviceClusterResponse, DeviceClusterUpdate,
     MosquitoEventPayload, SensorDataPayload, SensorDataResponse,
     SensorReadingWithDeviceResponse, UnregisteredSightingResponse,
     MosquitoIndividualPayload, MosquitoIndividualResponse, MosquitoEventResponse,
+    ExclusionRequest,
 )
 from app.device.chart_schema import DeviceChartsResponse
 from app.audit.models import AuditAction
@@ -18,6 +19,7 @@ from utils.protected_route import get_current_user, get_current_user_or_guest
 from app.authentication.schema import UserResponse
 from app.core.security.permissions import (
     require_super_admin, require_admin, visible_cluster_ids, manages_cluster, is_super_admin,
+    managed_cluster_ids,
 )
 from app.service.device_service import DeviceService
 from app.service.device_cluster_service import DeviceClusterService
@@ -222,7 +224,7 @@ def get_all_sensor_readings(
             page=page, page_size=page_size,
             start_date=start_date, end_date=end_date, search=search,
             region=region, device_uuids=device_uuid, cluster_id=cluster_id,
-            allowed_cluster_ids=allowed,
+            allowed_cluster_ids=allowed, managed_cluster_ids=managed_cluster_ids(current_user),
         )
     except Exception as e:
         raise e
@@ -238,7 +240,9 @@ def get_sensor_readings(
 ):
     try:
         allowed = visible_cluster_ids(session, current_user)
-        return DeviceService(session).get_sensor_readings(device_uuid, page=page, page_size=page_size, allowed_cluster_ids=allowed)
+        return DeviceService(session).get_sensor_readings(
+            device_uuid, page=page, page_size=page_size, allowed_cluster_ids=allowed,
+            managed_cluster_ids=managed_cluster_ids(current_user))
     except Exception as e:
         raise e
 
@@ -279,9 +283,55 @@ def get_mosquito_events(
             end_date=end_date,
             search=search,
             allowed_cluster_ids=allowed,
+            managed_cluster_ids=managed_cluster_ids(current_user),
         )
     except Exception as e:
         raise e
+
+
+# ── Exclusion (flag a bad row out of analysis; values never change) ─────────
+# 404: device/row not found or not managed (same rule as DELETE event).
+# 409: already in the requested state — nothing changes, nothing is audited.
+
+def _set_exclusion(session, user, model, device_uuid, row_id, reason, action, target_type):
+    row = DeviceService(session).set_exclusion(
+        model, device_uuid, row_id, user.id, reason, allowed_cluster_ids=managed_cluster_ids(user))
+    detail = {"device_uuid": device_uuid}
+    if reason is not None:
+        detail["reason"] = reason
+    audit(session, action, actor_user_id=user.id, actor_email=user.email,
+          target_type=target_type, target_id=row_id, detail=detail)
+    return row
+
+
+@router.patch("/uuid/{device_uuid}/sensor-readings/{reading_id}/exclude", response_model=SensorDataResponse)
+def exclude_sensor_reading(device_uuid: str, reading_id: int, body: ExclusionRequest,
+                           session: Session = Depends(get_db),
+                           current_user: UserResponse = Depends(require_admin)):
+    return _set_exclusion(session, current_user, SensorDeviceReading, device_uuid, reading_id,
+                          body.reason, AuditAction.SENSOR_READING_EXCLUDED, "sensor_reading")
+
+
+@router.patch("/uuid/{device_uuid}/sensor-readings/{reading_id}/include", response_model=SensorDataResponse)
+def include_sensor_reading(device_uuid: str, reading_id: int, session: Session = Depends(get_db),
+                           current_user: UserResponse = Depends(require_admin)):
+    return _set_exclusion(session, current_user, SensorDeviceReading, device_uuid, reading_id,
+                          None, AuditAction.SENSOR_READING_INCLUDED, "sensor_reading")
+
+
+@router.patch("/uuid/{device_uuid}/mosquito-events/{event_id}/exclude", response_model=MosquitoEventResponse)
+def exclude_mosquito_event(device_uuid: str, event_id: int, body: ExclusionRequest,
+                           session: Session = Depends(get_db),
+                           current_user: UserResponse = Depends(require_admin)):
+    return _set_exclusion(session, current_user, MosquitoEvent, device_uuid, event_id,
+                          body.reason, AuditAction.MOSQUITO_EVENT_EXCLUDED, "mosquito_event")
+
+
+@router.patch("/uuid/{device_uuid}/mosquito-events/{event_id}/include", response_model=MosquitoEventResponse)
+def include_mosquito_event(device_uuid: str, event_id: int, session: Session = Depends(get_db),
+                           current_user: UserResponse = Depends(require_admin)):
+    return _set_exclusion(session, current_user, MosquitoEvent, device_uuid, event_id,
+                          None, AuditAction.MOSQUITO_EVENT_INCLUDED, "mosquito_event")
 
 
 @router.delete("/uuid/{device_uuid}/mosquito-events/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -290,8 +340,7 @@ def delete_mosquito_event(device_uuid: str, event_id: int, session: Session = De
     # Deleting data is an admin action on devices the admin MANAGES: their own
     # cluster only (not public ones they can merely see). Super admin: all.
     try:
-        allowed = None if is_super_admin(current_user) else (
-            {current_user.cluster_id} if current_user.cluster_id is not None else set())
+        allowed = managed_cluster_ids(current_user)
         DeviceService(session).delete_mosquito_event(device_uuid=device_uuid, event_id=event_id, allowed_cluster_ids=allowed)
         audit(session, AuditAction.MOSQUITO_EVENT_DELETED, actor_user_id=current_user.id,
               actor_email=current_user.email, target_type="mosquito_event", target_id=event_id,

@@ -50,6 +50,9 @@ def run_health_sweep() -> None:
             .all()
         )
         for device in active_devices:
+            # LIVE_ (not ANALYSIS_): admin-excluded readings still count — this
+            # checks what the hardware sends, and excluding a stuck reading
+            # must not silence the malfunction alert.
             readings = (
                 session.query(SensorDeviceReading)
                 .filter(SensorDeviceReading.device_id == device.id, LIVE_SENSOR_READING,

@@ -106,7 +106,10 @@ class Device(Base):
             SensorDeviceReading.id
             == select(SensorDeviceReading.id)
             .where(SensorDeviceReading.device_id == Device.id, SensorDeviceReading.is_test.is_(False),
-                   SensorDeviceReading.import_batch_id.is_(None))
+                   SensorDeviceReading.import_batch_id.is_(None),
+                   # An excluded reading was judged bad: never show it as the
+                   # device's current values (liveness uses last_sensor_data_at).
+                   SensorDeviceReading.excluded_at.is_(None))
             .order_by(
                 SensorDeviceReading.timestamp.desc(),
                 SensorDeviceReading.id.desc(),
@@ -217,6 +220,12 @@ class SensorDeviceReading(Base):
     # measured: rows from before this column existed, CSV imports, manual HTTP
     # posts, and MQTT messages without a usable device timestamp. Never backfilled.
     received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Admin exclusion (flag only — values are never altered or deleted).
+    # NULL excluded_at = included. Excluded rows stay listed/exported with the
+    # flag but are left out of every analysis (ANALYSIS_* filters below).
+    excluded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    excluded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    exclusion_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     device: Mapped["Device"] = relationship("Device", back_populates="device_reading")
 
 
@@ -245,6 +254,10 @@ class MosquitoEvent(Base):
     import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("data_imports.id"), nullable=True, index=True)
     # Server UTC receive time; NULL = not measured (see SensorDeviceReading).
     received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Admin exclusion — see SensorDeviceReading.
+    excluded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    excluded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    exclusion_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     device: Mapped["Device"] = relationship("Device", back_populates="mosquito_readings")
     mosquito_reading: Mapped["MosquitoIndividualReading | None"] = relationship(
         "MosquitoIndividualReading",
@@ -252,6 +265,16 @@ class MosquitoEvent(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+
+    # Device identity for the event tables (the exclude action needs the
+    # device's uuid and cluster; device is joinedloaded on the fleet list).
+    @property
+    def device_uuid(self):
+        return self.device.device_uuid if self.device else None
+
+    @property
+    def cluster_id(self):
+        return self.device.cluster_id if self.device else None
 
     def __repr__(self):
         return f"MosquitoBatch(id={self.id}, device_id={self.device_id})"
@@ -293,6 +316,13 @@ class MosquitoIndividualReading(Base):
 # public API or summaries. Use these in every read query instead of inlining.
 LIVE_SENSOR_READING = SensorDeviceReading.is_test.is_(False)
 LIVE_MOSQUITO_EVENT = MosquitoEvent.is_test.is_(False)
+
+# Analysis filters: live AND not excluded by an admin. Every chart, total,
+# average, count, report, comparison, summary and alert baseline uses these.
+# LIVE_* alone is for row listings/exports (which show the exclusion flag),
+# the import duplicate check, data quality and device-health checks.
+ANALYSIS_SENSOR_READING = and_(LIVE_SENSOR_READING, SensorDeviceReading.excluded_at.is_(None))
+ANALYSIS_MOSQUITO_EVENT = and_(LIVE_MOSQUITO_EVENT, MosquitoEvent.excluded_at.is_(None))
 
 # Device-state filters: rows the device itself sent (not CSV-imported). Imported
 # rows are real data for charts/exports, but must never drive live state —

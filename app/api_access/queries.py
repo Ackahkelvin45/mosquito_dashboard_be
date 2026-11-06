@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Optional, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import Select, select, tuple_
+from sqlalchemy import Select, case, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.authentication.schema import UserResponse
@@ -51,6 +51,10 @@ SENSOR_READING_COLUMNS = {
     # Appended (not next to battery_voltage) so positional CSV readers of the
     # older column order keep working.
     "battery_pct": SensorDeviceReading.battery_pct,
+    # Admin exclusion flag, always LAST: True, or null/blank when included.
+    # Excluded rows are still listed/exported; they're left out of analysis.
+    "excluded": case((SensorDeviceReading.excluded_at.isnot(None), True)),
+    "exclusion_reason": SensorDeviceReading.exclusion_reason,
 }
 
 MOSQUITO_EVENT_COLUMNS = {
@@ -68,6 +72,8 @@ MOSQUITO_EVENT_COLUMNS = {
     "age_group": MosquitoIndividualReading.age_group,
     "sex": MosquitoIndividualReading.sex,
     "p_mosq": MosquitoIndividualReading.p_mosq,  # model confidence 0-1, raw
+    "excluded": case((MosquitoEvent.excluded_at.isnot(None), True)),
+    "exclusion_reason": MosquitoEvent.exclusion_reason,
 }
 
 DEVICE_COLUMNS = {

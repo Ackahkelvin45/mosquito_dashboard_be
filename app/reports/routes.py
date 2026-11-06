@@ -2,8 +2,8 @@
 
 A fixed template (summary, detections, environment, alerts, data quality,
 manual vs AI) over one period. Only measured figures: every section is built
-from live rows (LIVE_SENSOR_READING / LIVE_MOSQUITO_EVENT; CSV-imported rows
-count, test-mode rows never do) and a figure with nothing behind it is null
+from live rows (ANALYSIS_SENSOR_READING / ANALYSIS_MOSQUITO_EVENT; CSV-imported rows
+count; test-mode and admin-excluded rows never do) and a figure with nothing behind it is null
 or an empty list, never 0-filled or estimated.
 
 Periods (naive UTC, half-open [start, end)):
@@ -32,7 +32,7 @@ from app.core.database import get_db
 from app.core.security.permissions import effective_cluster_scope
 from app.dashboard.schema import BreakdownItem, RegionMosquitoCountDataPoint
 from app.device.models import (
-    LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING, Device, DeviceCluster, MosquitoEvent,
+    ANALYSIS_MOSQUITO_EVENT, ANALYSIS_SENSOR_READING, Device, DeviceCluster, MosquitoEvent,
     SensorDeviceReading,
 )
 from app.jobs.summaries import detection_stats
@@ -178,10 +178,10 @@ def _reporting_ids(session: Session, ids: list[int], start: datetime, stop: date
         return set()
     sensors = session.query(SensorDeviceReading.device_id).filter(
         SensorDeviceReading.device_id.in_(ids), SensorDeviceReading.timestamp >= start,
-        SensorDeviceReading.timestamp < stop, LIVE_SENSOR_READING).distinct()
+        SensorDeviceReading.timestamp < stop, ANALYSIS_SENSOR_READING).distinct()
     events = session.query(MosquitoEvent.device_id).filter(
         MosquitoEvent.device_id.in_(ids), MosquitoEvent.timestamp >= start,
-        MosquitoEvent.timestamp < stop, LIVE_MOSQUITO_EVENT).distinct()
+        MosquitoEvent.timestamp < stop, ANALYSIS_MOSQUITO_EVENT).distinct()
     return {i for (i,) in sensors.union(events).all()}
 
 
@@ -193,10 +193,10 @@ def _daily(session: Session, ids: list[int], start: datetime, stop: datetime) ->
     sday, eday = func.date(SensorDeviceReading.timestamp), func.date(MosquitoEvent.timestamp)
     sensors = session.query(sday, SensorDeviceReading.device_id).filter(
         SensorDeviceReading.device_id.in_(ids), SensorDeviceReading.timestamp >= start,
-        SensorDeviceReading.timestamp < stop, LIVE_SENSOR_READING).distinct().all()
+        SensorDeviceReading.timestamp < stop, ANALYSIS_SENSOR_READING).distinct().all()
     events = session.query(eday, MosquitoEvent.device_id, func.sum(MosquitoEvent.count)).filter(
         MosquitoEvent.device_id.in_(ids), MosquitoEvent.timestamp >= start,
-        MosquitoEvent.timestamp < stop, LIVE_MOSQUITO_EVENT).group_by(eday, MosquitoEvent.device_id).all()
+        MosquitoEvent.timestamp < stop, ANALYSIS_MOSQUITO_EVENT).group_by(eday, MosquitoEvent.device_id).all()
     devices: dict = defaultdict(set)
     counts: dict = defaultdict(int)
     for d, dev in sensors:
@@ -223,7 +223,7 @@ def _environment(session: Session, ids: list[int], start: datetime, stop: dateti
             func.count(temp), func.avg(temp), func.min(temp), func.max(temp),
             func.count(hum), func.avg(hum), func.min(hum), func.max(hum),
         ).filter(SensorDeviceReading.device_id.in_(ids), SensorDeviceReading.timestamp >= start,
-                 SensorDeviceReading.timestamp < stop, LIVE_SENSOR_READING).one()
+                 SensorDeviceReading.timestamp < stop, ANALYSIS_SENSOR_READING).one()
 
     def measure(n, mean, lo, hi):
         r = lambda v: round(float(v), 2) if v is not None else None  # noqa: E731

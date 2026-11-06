@@ -1,10 +1,10 @@
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, and_, func
+from sqlalchemy import or_, and_, func, update
 from typing import Optional, List
 from app.crud.base import BaseRepository
 from app.device.models import (
     Device, DeviceCluster, SensorDeviceReading, MosquitoEvent, MosquitoIndividualReading,
-    LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING,
+    LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING, ANALYSIS_SENSOR_READING,
 )
 from app.device.schema import DeviceCreate, DeviceUpdate,SensorDataPayload,MosquitoEventPayload
 from datetime import datetime, timezone
@@ -166,13 +166,14 @@ class DeviceRepository(BaseRepository[Device]):
             if cluster_ids:
                 query = query.filter(Device.cluster_id.in_(cluster_ids))
         if trap_status is not None:
-            # "On/off" reflects the trap_status of each device's most recent sensor reading.
+            # "On/off" reflects the trap_status of each device's most recent sensor reading
+            # (excluded readings skipped, like Device.latest_reading).
             latest_reading = (
                 self.session.query(
                     SensorDeviceReading.device_id,
                     func.max(SensorDeviceReading.timestamp).label("max_ts"),
                 )
-                .filter(LIVE_SENSOR_READING)
+                .filter(ANALYSIS_SENSOR_READING)
                 .group_by(SensorDeviceReading.device_id)
                 .subquery()
             )
@@ -183,7 +184,7 @@ class DeviceRepository(BaseRepository[Device]):
                     and_(
                         SensorDeviceReading.device_id == Device.id,
                         SensorDeviceReading.timestamp == latest_reading.c.max_ts,
-                        LIVE_SENSOR_READING,
+                        ANALYSIS_SENSOR_READING,
                     ),
                 )
                 .filter(SensorDeviceReading.trap_status == trap_status)
@@ -559,7 +560,16 @@ class DeviceRepository(BaseRepository[Device]):
         )
 
     def delete_mosquito_event(self, device_id: int, event_id: int) -> None:
-        event = self.get_mosquito_event_by_id(device_id=device_id, event_id=event_id)
+        from app.device.imports import _add_to_count  # atomic SQL +/- n, shared with imports
+
+        # Row lock (no-op on SQLite): a concurrent exclude/include can't flip
+        # excluded_at between the check below and the count update.
+        event = (
+            self.session.query(MosquitoEvent)
+            .filter(MosquitoEvent.id == event_id, MosquitoEvent.device_id == device_id)
+            .with_for_update()
+            .first()
+        )
         if not event:
             raise HTTPException(status_code=404, detail="Mosquito event not found")
 
@@ -570,15 +580,65 @@ class DeviceRepository(BaseRepository[Device]):
             .delete(synchronize_session=False)
         )
 
-        device = self.session.query(Device).filter(Device.id == device_id).first()
-        # Test events were never added to the count at ingest, so don't subtract them.
-        if device and readings_deleted and not event.is_test:
-            device.total_mosquito_count = max(0, (device.total_mosquito_count or 0) - readings_deleted)
+        # Test events were never added to the count at ingest, and excluding an
+        # event already took it out — so don't subtract either again.
+        if readings_deleted and not event.is_test and event.excluded_at is None:
+            _add_to_count(self.session, device_id, -readings_deleted)
 
         self.session.delete(event)
         self.session.commit()
 
 
+
+    def set_exclusion(self, model, device_id: int, row_id: int, user_id: int,
+                      reason: str | None):
+        """Exclude (reason given) or include (reason None) one live row of
+        `model` (SensorDeviceReading | MosquitoEvent). Flag only: values are
+        never touched. 404 if the row isn't this device's live row; 409 if it
+        is already in the requested state. Excluding a mosquito event takes its
+        detections out of total_mosquito_count (including puts them back), so
+        the stored total keeps matching the analysis rule."""
+        from app.device.imports import _add_to_count  # atomic SQL +/- n, shared with imports
+
+        label = "Sensor reading" if model is SensorDeviceReading else "Mosquito event"
+        row = (
+            self.session.query(model)
+            .filter(model.id == row_id, model.device_id == device_id, model.is_test.is_(False))
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"{label} not found")
+        excluding = reason is not None
+        # Conditional UPDATE: of two concurrent identical requests exactly one
+        # matches, so the count is adjusted (and audited) once.
+        changed = self.session.execute(
+            update(model)
+            .where(model.id == row.id,
+                   model.excluded_at.is_(None) if excluding else model.excluded_at.isnot(None))
+            .values(excluded_at=datetime.utcnow() if excluding else None,
+                    excluded_by_user_id=user_id if excluding else None,
+                    exclusion_reason=reason)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if not changed:
+            self.session.rollback()
+            # Deleted since we looked (404), or already in that state (409).
+            if self.session.query(model.id).filter(model.id == row.id).first() is None:
+                raise HTTPException(status_code=404, detail=f"{label} not found")
+            state = "already excluded" if excluding else "not excluded"
+            raise HTTPException(status_code=409, detail=f"{label} is {state}")
+        if model is MosquitoEvent:
+            # Same unit as ingest/delete: one per detection (reading) row.
+            detections = (
+                self.session.query(func.count(MosquitoIndividualReading.id))
+                .filter(MosquitoIndividualReading.batch_id == row.id)
+                .scalar()
+            )
+            if detections:
+                _add_to_count(self.session, device_id, -detections if excluding else detections)
+        self.session.commit()
+        self.session.refresh(row)
+        return row
 
     def get_all_mosquito_readings(self)->List[MosquitoIndividualReading]:
         return (

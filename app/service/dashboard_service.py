@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from app.device.models import (
     Device, MosquitoEvent, SensorDeviceReading, MosquitoIndividualReading,
-    LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING,
+    ANALYSIS_MOSQUITO_EVENT, ANALYSIS_SENSOR_READING,
 )
 from app.device.schema import ACTIVE_WINDOW_HOURS
 from app.dashboard.schema import (
@@ -229,7 +229,7 @@ class DashboardService:
                     MosquitoEvent.device_id.in_(device_ids),
                     MosquitoEvent.timestamp >= window_start,
                     MosquitoEvent.timestamp <= window_end,
-                    LIVE_MOSQUITO_EVENT,
+                    ANALYSIS_MOSQUITO_EVENT,
                 )
                 .scalar()
             )
@@ -245,7 +245,7 @@ class DashboardService:
                     MosquitoEvent.device_id.in_(device_ids),
                     MosquitoEvent.timestamp >= window_start,
                     MosquitoEvent.timestamp <= window_end,
-                    LIVE_MOSQUITO_EVENT,
+                    ANALYSIS_MOSQUITO_EVENT,
                 )
                 .distinct()
                 .all()
@@ -256,7 +256,7 @@ class DashboardService:
                     SensorDeviceReading.device_id.in_(device_ids),
                     SensorDeviceReading.timestamp >= window_start,
                     SensorDeviceReading.timestamp <= window_end,
-                    LIVE_SENSOR_READING,
+                    ANALYSIS_SENSOR_READING,
                 )
                 .distinct()
                 .all()
@@ -287,7 +287,7 @@ class DashboardService:
                     SensorDeviceReading.device_id.in_(device_ids),
                     SensorDeviceReading.timestamp >= window_start,
                     SensorDeviceReading.timestamp <= window_end,
-                    LIVE_SENSOR_READING,
+                    ANALYSIS_SENSOR_READING,
                 )
                 .one()
             )
@@ -327,7 +327,7 @@ class DashboardService:
             .filter(
                 MosquitoEvent.timestamp >= window_start,
                 MosquitoEvent.timestamp <= window_end,
-                LIVE_MOSQUITO_EVENT,
+                ANALYSIS_MOSQUITO_EVENT,
             )
         )
 
@@ -375,7 +375,7 @@ class DashboardService:
             .filter(
                 MosquitoEvent.timestamp >= window_start,
                 MosquitoEvent.timestamp <= window_end,
-                LIVE_MOSQUITO_EVENT,
+                ANALYSIS_MOSQUITO_EVENT,
             )
         )
 
@@ -463,7 +463,7 @@ class DashboardService:
         first_q = self.session.query(
             SensorDeviceReading.device_id,
             func.min(SensorDeviceReading.timestamp),
-        ).filter(LIVE_SENSOR_READING)
+        ).filter(ANALYSIS_SENSOR_READING)
         if device_ids is not None:
             first_q = first_q.filter(SensorDeviceReading.device_id.in_(device_ids))
         first_seen = dict(first_q.group_by(SensorDeviceReading.device_id).all())
@@ -480,7 +480,7 @@ class DashboardService:
             .filter(
                 SensorDeviceReading.timestamp >= window_start - stale,
                 SensorDeviceReading.timestamp <= window_end,
-                LIVE_SENSOR_READING,
+                ANALYSIS_SENSOR_READING,
             )
             .order_by(
                 SensorDeviceReading.device_id,
@@ -551,7 +551,7 @@ class DashboardService:
                 .filter(
                     MosquitoEvent.timestamp >= window_start,
                     MosquitoEvent.timestamp <= window_end,
-                    LIVE_MOSQUITO_EVENT,
+                    ANALYSIS_MOSQUITO_EVENT,
                 )
             )
             if device_ids is not None:
@@ -647,7 +647,7 @@ class DashboardService:
         event_q = self.session.query(MosquitoEvent).filter(
             MosquitoEvent.timestamp >= window_start,
             MosquitoEvent.timestamp <= window_end,
-            LIVE_MOSQUITO_EVENT,
+            ANALYSIS_MOSQUITO_EVENT,
         )
         if device_ids is not None:
             event_q = event_q.filter(MosquitoEvent.device_id.in_(device_ids))
@@ -660,7 +660,7 @@ class DashboardService:
         reading_q = self.session.query(SensorDeviceReading).filter(
             SensorDeviceReading.timestamp >= window_start,
             SensorDeviceReading.timestamp <= window_end,
-            LIVE_SENSOR_READING,
+            ANALYSIS_SENSOR_READING,
         )
         if device_ids is not None:
             reading_q = reading_q.filter(SensorDeviceReading.device_id.in_(device_ids))
@@ -742,7 +742,7 @@ class DashboardService:
             .filter(
                 MosquitoEvent.timestamp >= window_start,
                 MosquitoEvent.timestamp <= window_end,
-                LIVE_MOSQUITO_EVENT,
+                ANALYSIS_MOSQUITO_EVENT,
             )
         )
         if device_ids is not None:
@@ -808,7 +808,7 @@ class DashboardService:
             .filter(
                 MosquitoEvent.timestamp >= window_start,
                 MosquitoEvent.timestamp <= window_end,
-                LIVE_MOSQUITO_EVENT,
+                ANALYSIS_MOSQUITO_EVENT,
             )
         )
         if device_ids is not None:
@@ -863,7 +863,7 @@ class DashboardService:
         event_q = self.session.query(MosquitoEvent).filter(
             MosquitoEvent.timestamp >= window_start,
             MosquitoEvent.timestamp <= window_end,
-            LIVE_MOSQUITO_EVENT,
+            ANALYSIS_MOSQUITO_EVENT,
         )
         if device_ids is not None:
             event_q = event_q.filter(MosquitoEvent.device_id.in_(device_ids))
