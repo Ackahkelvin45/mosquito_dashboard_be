@@ -62,9 +62,11 @@ def report_scope(user: UserResponse) -> Optional[set[int]]:
 
 
 def build_report(session: Session, scope: Optional[set[int]], days: int,
-                 now: Optional[datetime] = None) -> DataQualityReport:
+                 now: Optional[datetime] = None,
+                 start: Optional[datetime] = None) -> DataQualityReport:
+    """`start` overrides now - days (used by /reports for a calendar period)."""
     window_end = now or datetime.utcnow()
-    window_start = window_end - timedelta(days=days)
+    window_start = start or window_end - timedelta(days=days)
     limits = get_thresholds(session)
 
     device_q = session.query(Device)

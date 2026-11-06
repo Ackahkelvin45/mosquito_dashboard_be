@@ -13,6 +13,7 @@ AND zero activity are skipped. Per-user preferences are honoured downstream
 """
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 
 from sqlalchemy import func
 
@@ -70,42 +71,53 @@ def _run_summary(event: NotificationEvent, *, hours: int, period_label: str) -> 
         logger.info("%s: emitted %d summary notification(s)", event, emitted)
 
 
+def detection_stats(session, device_ids: list[int], since: datetime,
+                    until: Optional[datetime] = None) -> dict:
+    """Live detection events, mosquito total and top species for these devices
+    over [since, until) (until=None: up to now). Shared with /reports."""
+    if not device_ids:
+        return {"mosquito_events": 0, "mosquito_total": 0, "top_species": None}
+    window = [
+        MosquitoEvent.device_id.in_(device_ids),
+        MosquitoEvent.timestamp >= since,
+        LIVE_MOSQUITO_EVENT,
+    ]
+    if until is not None:
+        window.append(MosquitoEvent.timestamp < until)
+    mosquito_events = (
+        session.query(func.count(MosquitoEvent.id)).filter(*window).scalar() or 0
+    )
+    mosquito_total = (
+        session.query(func.coalesce(func.sum(MosquitoEvent.count), 0))
+        .filter(*window)
+        .scalar()
+        or 0
+    )
+    top = (
+        session.query(
+            MosquitoIndividualReading.species,
+            func.count(MosquitoIndividualReading.id),
+        )
+        .join(MosquitoEvent, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
+        .filter(*window)
+        .filter(
+            MosquitoIndividualReading.species.isnot(None),
+            MosquitoIndividualReading.species != "",
+        )
+        .group_by(MosquitoIndividualReading.species)
+        .order_by(func.count(MosquitoIndividualReading.id).desc())
+        .first()
+    )
+    return {
+        "mosquito_events": int(mosquito_events),
+        "mosquito_total": int(mosquito_total),
+        "top_species": top[0] if top else None,
+    }
+
+
 def _device_group_stats(session, devices, since: datetime) -> dict:
     device_ids = [device.id for device in devices]
-    mosquito_events = 0
-    mosquito_total = 0
-    top_species = None
-    if device_ids:
-        window = (
-            MosquitoEvent.device_id.in_(device_ids),
-            MosquitoEvent.timestamp >= since,
-            LIVE_MOSQUITO_EVENT,
-        )
-        mosquito_events = (
-            session.query(func.count(MosquitoEvent.id)).filter(*window).scalar() or 0
-        )
-        mosquito_total = (
-            session.query(func.coalesce(func.sum(MosquitoEvent.count), 0))
-            .filter(*window)
-            .scalar()
-            or 0
-        )
-        top = (
-            session.query(
-                MosquitoIndividualReading.species,
-                func.count(MosquitoIndividualReading.id),
-            )
-            .join(MosquitoEvent, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
-            .filter(*window)
-            .filter(
-                MosquitoIndividualReading.species.isnot(None),
-                MosquitoIndividualReading.species != "",
-            )
-            .group_by(MosquitoIndividualReading.species)
-            .order_by(func.count(MosquitoIndividualReading.id).desc())
-            .first()
-        )
-        top_species = top[0] if top else None
+    detections = detection_stats(session, device_ids, since)
 
     offline_devices = sum(1 for device in devices if device.offline_since is not None)
     # Resolved live (never from-imported) so the digest count always agrees
@@ -123,9 +135,7 @@ def _device_group_stats(session, devices, since: datetime) -> dict:
 
     return {
         "device_count": len(device_ids),
-        "mosquito_events": int(mosquito_events),
-        "mosquito_total": int(mosquito_total),
-        "top_species": top_species,
+        **detections,
         "offline_devices": offline_devices,
         "low_battery_devices": low_battery_devices,
     }
