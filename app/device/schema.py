@@ -259,7 +259,10 @@ class MosquitoEventPayload(BaseModel):
 class MosquitoIndividualResponse(MosquitoIndividualPayload):
     id: int = Field(..., description="ID of the individual mosquito reading")
     batch_id: int = Field(..., description="ID of the mosquito event batch this reading belongs to")
-    device_uuid: Optional[str] = None 
+    device_uuid: Optional[str] = None
+    # Ingest stores p_mosq unvalidated; re-checking 0-1 here would 500 the whole
+    # page for one bad device value. Report what was stored.
+    p_mosq: Optional[float] = None
 
 
     model_config = ConfigDict(from_attributes=True)
