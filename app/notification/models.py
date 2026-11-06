@@ -1,10 +1,11 @@
 from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.notification.enums import (
+    HANDLEABLE_TYPES,
     DeliveryChannel,
     DeliveryStatus,
     NotificationCategory,
@@ -55,8 +56,23 @@ class Notification(Base):
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Cleanup job purges after expiry.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Links the per-recipient rows of ONE emission (one send/send_bulk call).
+    # NULL on rows created before this column existed.
+    alert_group: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # Shared across the alert_group: one person handles it for everyone.
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    handled_by_user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    handled_by = relationship("User", foreign_keys=[handled_by_user_id])
     # Naive UTC — house convention on the event path.
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    @property
+    def handled_by_name(self) -> str | None:
+        return self.handled_by.full_name if self.handled_by else None
+
+    @property
+    def handleable(self) -> bool:
+        return self.notification_type in HANDLEABLE_TYPES
 
     def __repr__(self):
         return (

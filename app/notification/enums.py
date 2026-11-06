@@ -51,6 +51,23 @@ class NotificationType(StrEnum):
     TEST = "TEST"
 
 
+# Real-world alerts someone can act on — only these can be marked handled.
+HANDLEABLE_TYPES = frozenset({
+    NotificationType.SPECIES_DETECTED,
+    NotificationType.ACTIVITY_SURGE,
+    NotificationType.LOW_BATTERY,
+    NotificationType.TRAP_TRIGGERED,
+    NotificationType.EXTREME_TEMPERATURE,
+    NotificationType.EXTREME_HUMIDITY,
+    NotificationType.SENSOR_MALFUNCTION,
+    NotificationType.DEVICE_OFFLINE,
+    NotificationType.MAINTENANCE_DUE,
+    NotificationType.UNKNOWN_DEVICE,
+    NotificationType.INVALID_PAYLOAD,
+    NotificationType.PIPELINE_SILENT,
+})
+
+
 class PushProvider(StrEnum):
     WEBPUSH = "WEBPUSH"
     FCM = "FCM"

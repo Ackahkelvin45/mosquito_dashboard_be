@@ -42,6 +42,7 @@ def list_notifications(
     archived: bool = Query(default=False, description="Show archived instead of active notifications"),
     search: Optional[str] = Query(default=None, description="Search across title and body"),
     sort: str = Query(default="newest", pattern="^(newest|oldest)$"),
+    handled: Optional[bool] = Query(default=None, description="true = handled alerts, false = alerts awaiting action"),
     current_user: UserResponse = Depends(get_current_user),
 ):
     try:
@@ -50,7 +51,7 @@ def list_notifications(
             page=page, page_size=page_size,
             unread_only=unread_only, category=category,
             severity=severity, notification_type=type_,
-            archived=archived, search=search, sort=sort,
+            archived=archived, search=search, sort=sort, handled=handled,
         )
     except Exception as e:
         raise e
@@ -207,6 +208,32 @@ def unarchive_notification(notification_id: int, session: Session = Depends(get_
         return NotificationService(session).unarchive(notification_id, current_user.id)
     except Exception as e:
         raise e
+
+
+@router.patch("/{notification_id}/handled", status_code=status.HTTP_200_OK, response_model=NotificationResponse)
+def mark_handled(notification_id: int, session: Session = Depends(get_db),
+                 current_user: UserResponse = Depends(get_current_user)):
+    return _set_handled(session, notification_id, current_user, True)
+
+
+@router.patch("/{notification_id}/unhandled", status_code=status.HTTP_200_OK, response_model=NotificationResponse)
+def mark_unhandled(notification_id: int, session: Session = Depends(get_db),
+                   current_user: UserResponse = Depends(get_current_user)):
+    return _set_handled(session, notification_id, current_user, False)
+
+
+def _set_handled(session: Session, notification_id: int, current_user: UserResponse,
+                 handled: bool) -> NotificationResponse:
+    from app.audit.models import AuditAction
+    from app.audit.recorder import audit
+
+    result, changed = NotificationService(session).set_handled(notification_id, current_user.id, handled)
+    if changed:  # a no-op click (already handled/unhandled) is not an action
+        audit(session, AuditAction.ALERT_HANDLED if handled else AuditAction.ALERT_UNHANDLED,
+              actor_user_id=current_user.id, actor_email=current_user.email,
+              target_type="notification", target_id=notification_id,
+              detail={"notification_type": str(result.notification_type)})
+    return result
 
 
 @router.delete("/{notification_id}", status_code=status.HTTP_204_NO_CONTENT)

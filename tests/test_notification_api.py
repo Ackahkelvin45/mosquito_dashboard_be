@@ -15,6 +15,7 @@ NOTIFICATION_KEYS = {
     "id", "title", "body", "notification_type", "severity", "category",
     "payload", "icon", "action_url", "cluster_id", "device_id",
     "read_at", "archived_at", "delivered_at", "created_at", "expires_at",
+    "handleable", "handled_at", "handled_by_name",
 }
 
 
@@ -40,6 +41,8 @@ class TestAuthRequired:
         ("PATCH", "/notifications/1/unread"),
         ("PATCH", "/notifications/1/archive"),
         ("PATCH", "/notifications/1/unarchive"),
+        ("PATCH", "/notifications/1/handled"),
+        ("PATCH", "/notifications/1/unhandled"),
         ("DELETE", "/notifications/1"),
     ])
     def test_401_without_token(self, client, method, path):

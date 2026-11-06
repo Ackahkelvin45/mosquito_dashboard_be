@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.crud.base import BaseRepository
 from app.notification.enums import (
+    HANDLEABLE_TYPES,
     DeliveryChannel,
     DeliveryStatus,
     NotificationCategory,
@@ -73,6 +74,7 @@ class NotificationRepository(BaseRepository[Notification]):
         archived: bool = False,
         search: Optional[str] = None,
         sort: str = "newest",
+        handled: Optional[bool] = None,
     ) -> Tuple[List[Notification], int]:
         """Return (page_items, total) filtered and paged in SQL.
 
@@ -95,6 +97,14 @@ class NotificationRepository(BaseRepository[Notification]):
             query = query.filter(Notification.severity == severity)
         if notification_type is not None:
             query = query.filter(Notification.notification_type == notification_type)
+        if handled is True:
+            query = query.filter(Notification.handled_at.isnot(None))
+        elif handled is False:
+            # "Unhandled" = alerts still awaiting action, not informational rows.
+            query = query.filter(
+                Notification.handled_at.is_(None),
+                Notification.notification_type.in_(HANDLEABLE_TYPES),
+            )
         if search:
             # Escape LIKE metacharacters so a search for "100%" or "_" matches
             # literally instead of acting as a wildcard. (The value itself is
@@ -178,6 +188,28 @@ class NotificationRepository(BaseRepository[Notification]):
             self.session.commit()
             self.session.refresh(notification)
         return notification
+
+    def set_handled(self, notification: Notification, user_id: Optional[int]) -> int:
+        """Stamp (user_id) or clear (None) handled state on every row of the
+        notification's alert_group in one UPDATE; legacy rows without a group
+        only touch themselves. Marking never overwrites an existing handler."""
+        query = self.session.query(Notification).filter(
+            Notification.alert_group == notification.alert_group
+            if notification.alert_group
+            else Notification.id == notification.id
+        )
+        if user_id is not None:
+            query = query.filter(Notification.handled_at.is_(None))
+            values = {Notification.handled_at: datetime.utcnow(),
+                      Notification.handled_by_user_id: user_id}
+        else:
+            query = query.filter(Notification.handled_at.is_not(None))
+            values = {Notification.handled_at: None,
+                      Notification.handled_by_user_id: None}
+        updated = query.update(values, synchronize_session=False)
+        self.session.commit()
+        self.session.refresh(notification)
+        return updated
 
     def soft_delete(self, notification: Notification) -> Notification:
         if notification.deleted_at is None:

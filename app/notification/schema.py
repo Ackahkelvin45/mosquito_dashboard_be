@@ -29,6 +29,9 @@ class NotificationResponse(BaseModel):
     delivered_at: Optional[datetime] = Field(None, description="When the notification was delivered in-app (naive UTC)")
     created_at: datetime = Field(..., description="When the notification was created (naive UTC)")
     expires_at: Optional[datetime] = Field(None, description="When the notification expires and is purged (naive UTC)")
+    handleable: bool = Field(False, description="Whether this is an alert that can be marked handled")
+    handled_at: Optional[datetime] = Field(None, description="When the alert was handled, shared by all recipients (naive UTC)")
+    handled_by_name: Optional[str] = Field(None, description="Full name of the user who handled the alert")
 
     model_config = ConfigDict(from_attributes=True)
 

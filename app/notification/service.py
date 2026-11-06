@@ -11,6 +11,7 @@ SessionLocal (house pattern from device_location_service._dispatch_geocode)
 so request/MQTT paths are never blocked by network calls.
 """
 import logging
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ from app.core.pagination import Page
 from app.notification.channels.email import EmailChannel
 from app.notification.channels.push import PushChannel
 from app.notification.enums import (
+    HANDLEABLE_TYPES,
     DeliveryChannel,
     DeliveryStatus,
     NotificationCategory,
@@ -179,6 +181,7 @@ class NotificationService:
             cluster_id=cluster_id,
             device_id=device_id,
             dedupe_key=dedupe_key,
+            alert_group=str(uuid.uuid4()),
             expires_at=expires_at,
             scheduled_for=scheduled_for,
         )
@@ -228,6 +231,7 @@ class NotificationService:
         now = datetime.utcnow()
         deliver_now = not (scheduled_for and scheduled_for > now)
         unique_user_ids = list(dict.fromkeys(user_ids))  # de-dup, keep order
+        alert_group = str(uuid.uuid4())  # links this emission's sibling rows
         # One query for every recipient's preferences; users without a row get
         # the model defaults in Python (no per-user SELECT/INSERT in the loop).
         preferences_by_user = self.preference_repository.get_by_users(unique_user_ids)
@@ -253,6 +257,7 @@ class NotificationService:
                     cluster_id=cluster_id,
                     device_id=device_id,
                     dedupe_key=dedupe_key,
+                    alert_group=alert_group,
                     expires_at=expires_at,
                     scheduled_for=scheduled_for,
                     delivered_at=now if deliver_now else None,
@@ -360,6 +365,16 @@ class NotificationService:
         self.notification_repository.unarchive(notification)
         return NotificationResponse.model_validate(notification)
 
+    def set_handled(self, notification_id: int, user_id: int, handled: bool) -> tuple[NotificationResponse, int]:
+        """Mark/unmark the real-world alert handled for EVERY recipient. Only
+        a recipient (row owner) can act — cluster scoping is inherited from
+        the fan-out, so non-recipients get the usual 404."""
+        notification = self._get_owned_or_404(notification_id, user_id)
+        if notification.notification_type not in HANDLEABLE_TYPES:
+            raise HTTPException(status_code=400, detail="Only alerts can be marked as handled")
+        changed = self.notification_repository.set_handled(notification, user_id if handled else None)
+        return NotificationResponse.model_validate(notification), changed
+
     def delete(self, notification_id: int, user_id: int) -> None:
         notification = self._get_owned_or_404(notification_id, user_id)
         self.notification_repository.soft_delete(notification)
@@ -380,6 +395,7 @@ class NotificationService:
         archived: bool = False,
         search: Optional[str] = None,
         sort: str = "newest",
+        handled: Optional[bool] = None,
     ) -> Page[NotificationResponse]:
         # Filtering/COUNT/OFFSET happen in SQL (high-volume table) — the repo
         # returns (items, total) and we build the house Page envelope here.
@@ -394,6 +410,7 @@ class NotificationService:
             archived=archived,
             search=search,
             sort=sort,
+            handled=handled,
         )
         total_pages = (total + page_size - 1) // page_size if page_size else 0
         return Page[NotificationResponse](
