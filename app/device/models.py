@@ -1,5 +1,5 @@
 from app.core.database import Base
-from sqlalchemy import Enum, Integer, String, DateTime, Boolean, Float, JSON, ForeignKey, Table, Column, select, and_
+from sqlalchemy import Enum, Integer, String, DateTime, Boolean, Float, JSON, ForeignKey, Table, Column, Index, select, and_
 from sqlalchemy.orm import relationship, mapped_column, Mapped
 from datetime import datetime
 from app.authentication.enums import DeviceStatus
@@ -185,6 +185,10 @@ class DataImport(Base):
 
 class SensorDeviceReading(Base):
     __tablename__ = "sensor_device_readings"
+    __table_args__ = (
+        Index("ix_sensor_readings_device_timestamp", "device_id", "timestamp"),
+        Index("ix_sensor_device_readings_timestamp_id", "timestamp", "id"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     device_id: Mapped[int] = mapped_column(Integer, ForeignKey("devices.id"))
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
@@ -221,6 +225,10 @@ class SensorDeviceReading(Base):
 
 class MosquitoEvent(Base):
     __tablename__ = "mosquito_events"
+    __table_args__ = (
+        Index("ix_mosquito_events_device_timestamp", "device_id", "timestamp"),
+        Index("ix_mosquito_events_timestamp_id", "timestamp", "id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"))

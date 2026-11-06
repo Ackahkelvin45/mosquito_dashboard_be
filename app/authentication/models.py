@@ -29,7 +29,7 @@ class User(Base):
     # The single cluster this user belongs to (their membership). Distinct from
     # `clusters` below, which is the many-to-many admin link. Nullable: a user
     # can exist before being assigned to a cluster.
-    cluster_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("device_clusters.id"), nullable=True)
+    cluster_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("device_clusters.id"), nullable=True, index=True)
     cluster: Mapped["DeviceCluster | None"] = relationship(
         "DeviceCluster",
         foreign_keys=[cluster_id],

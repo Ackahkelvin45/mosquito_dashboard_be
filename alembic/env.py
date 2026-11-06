@@ -6,8 +6,14 @@ from alembic import context
 from app.core.database import Base
 
 # Ensure all model modules are imported so Base.metadata is populated for autogenerate.
+from app.api_access import models as _api_access_models  # noqa: F401
+from app.audit import models as _audit_models  # noqa: F401
 from app.authentication import models as _authentication_models  # noqa: F401
+from app.core import app_settings as _app_settings  # noqa: F401
 from app.device import models as _device_models  # noqa: F401
+from app.monitoring import models as _monitoring_models  # noqa: F401
+from app.notification import alert_settings as _alert_settings  # noqa: F401
+from app.notification import models as _notification_models  # noqa: F401
 from app.trap_counts import models as _trap_count_models  # noqa: F401
 
 # Load .env
