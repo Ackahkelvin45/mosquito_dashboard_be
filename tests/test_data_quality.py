@@ -202,3 +202,31 @@ def test_silence_threshold_boundary(app, client, db_session, make_cluster, make_
     row = _by_id(client.get("/monitoring/data-quality").json())[device.id]
     assert row["silences_over_threshold"] == 1
     assert row["longest_silence_min"] == pytest.approx(12.0, abs=0.05)
+
+
+def test_delivery_delay(app, client, db_session, make_cluster, make_device, make_user):
+    """Delay = received_at - timestamp over live readings that have
+    received_at. NULL rows are not measured (not 0), negative delays (device
+    clock ahead) are kept, the threshold is strict >, test rows excluded."""
+    cluster = make_cluster()
+    device, quiet, old = make_device(cluster), make_device(cluster), make_device(cluster)
+    base = datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)
+    at = lambda s: base + timedelta(seconds=s)  # noqa: E731
+    _reading(db_session, device, base, received_at=at(600))        # exactly 10 min: not over
+    _reading(db_session, device, base, received_at=at(601))        # just over
+    _reading(db_session, device, base, received_at=at(-30))        # device clock ahead
+    _reading(db_session, device, base)                             # not measured
+    _reading(db_session, device, base, is_test=True, received_at=at(99_999))
+    _reading(db_session, old, base)                                # only pre-feature rows
+    db_session.commit()
+    _as(app, make_user(role=UserRole.SUPER_ADMIN))
+    rows = _by_id(client.get("/monitoring/data-quality").json())
+
+    d = rows[device.id]
+    assert d["delay_measured"] == 3
+    assert d["avg_delay_s"] == pytest.approx((600 + 601 - 30) / 3, abs=0.1)
+    assert (d["min_delay_s"], d["max_delay_s"]) == (-30.0, 601.0)
+    assert d["delayed_over_threshold"] == 1
+    for r in (rows[quiet.id], rows[old.id]):
+        assert r["delay_measured"] == 0 and r["delayed_over_threshold"] == 0
+        assert r["avg_delay_s"] is r["min_delay_s"] is r["max_delay_s"] is None

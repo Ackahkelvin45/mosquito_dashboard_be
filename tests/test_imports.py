@@ -158,6 +158,9 @@ def test_round_trip_export_import_is_identical(client, as_user, world, db_sessio
     # Provenance + real data.
     assert all(r.import_batch_id and not r.is_test for r in db_session.query(SensorDeviceReading))
     assert all(r.import_batch_id and not r.is_test for r in db_session.query(MosquitoEvent))
+    # Not received live from a device: no receive time, so no fake delay.
+    assert all(r.received_at is None for r in db_session.query(SensorDeviceReading))
+    assert all(r.received_at is None for r in db_session.query(MosquitoEvent))
 
 
 # ── Dry run / all-or-nothing / validation ────────────────────────────────────

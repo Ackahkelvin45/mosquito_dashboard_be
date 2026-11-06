@@ -715,3 +715,60 @@ class TestSchemaReferenceConformance:
         r = db_session.query(SensorDeviceReading).one()
         assert r.device_id == device.id
         assert r.timestamp == datetime.utcfromtimestamp(1786270740)
+
+
+class TestReceivedAt:
+    """Every live ingest path stamps the server receive time (naive UTC);
+    the device timestamp is kept as sent. Test-mode rows are stamped too."""
+
+    def _fresh(self, value):
+        assert value is not None and abs((datetime.utcnow() - value).total_seconds()) < 5
+
+    @pytest.mark.parametrize("is_test", [False, True])
+    def test_mqtt_sensor(self, db_session, super_admin, make_device, is_test):
+        handle_sensor_data(db_session, make_device(), _sensor_payload(), is_test=is_test)
+        r = db_session.query(SensorDeviceReading).one()
+        self._fresh(r.received_at)
+        assert r.timestamp == datetime(2026, 7, 30, 10, 0)
+
+    @pytest.mark.parametrize("is_test", [False, True])
+    def test_mqtt_mosquito(self, db_session, super_admin, make_device, is_test):
+        handle_mosquito_event(db_session, make_device(), _mosquito_payload(), is_test=is_test)
+        e = db_session.query(MosquitoEvent).one()
+        self._fresh(e.received_at)
+        assert e.timestamp == datetime(2026, 7, 30, 10, 0)
+
+    def test_http_paths(self, db_session, make_device, monkeypatch):
+        import app.device.repository.device_repository as repo_module
+        from app.device.schema import MosquitoEventPayload, SensorDataPayload
+
+        monkeypatch.setattr(repo_module, "apply_reported_position", lambda *a: None)
+        device, ts = make_device(), datetime(2026, 7, 30, 10, 0)
+        repo = repo_module.DeviceRepository(db_session)
+        repo.create_sensor_reading(device, SensorDataPayload(
+            timestamp=ts, temp_external=30.0, temp_internal=28.0, humidity_external=70.0,
+            humidity_internal=50.0, pressure_internal=1010.0, pressure_external=1009.0, battery=3.9))
+        repo.create_mosquito_event(device, MosquitoEventPayload(
+            timestamp=ts, mosquito_reading={"detection_timestamp": ts, "age_group": "", "sex": "female"}))
+        # Person-authenticated manual/scripted posts, possibly of old data:
+        # not received live from a device, so no receive time (like CSV import).
+        assert db_session.query(SensorDeviceReading).one().received_at is None
+        assert db_session.query(MosquitoEvent).one().received_at is None
+
+    @pytest.mark.parametrize("ts", [None, "not-a-date"])
+    def test_defaulted_timestamp_is_not_measured(self, db_session, super_admin, make_device, ts):
+        # The timestamp falls back to server time, so a delay would be a fake ~0.
+        device = make_device()
+        handle_sensor_data(db_session, device, _sensor_payload(timestamp=ts))
+        mosquito = _mosquito_payload()
+        mosquito["timestamp"] = ts
+        handle_mosquito_event(db_session, device, mosquito)
+        r, e = db_session.query(SensorDeviceReading).one(), db_session.query(MosquitoEvent).one()
+        assert r.received_at is None and e.received_at is None
+        self._fresh(r.timestamp)   # existing fallback unchanged
+        self._fresh(e.timestamp)
+
+    def test_tz_aware_timestamp_stored_as_naive_utc(self, db_session, super_admin, make_device):
+        handle_sensor_data(db_session, make_device(), _sensor_payload(timestamp="2026-07-29T16:00:00+03:00"))
+        r = db_session.query(SensorDeviceReading).one()
+        assert r.timestamp == datetime(2026, 7, 29, 13, 0) and r.timestamp.tzinfo is None

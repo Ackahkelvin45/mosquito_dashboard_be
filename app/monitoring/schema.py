@@ -69,6 +69,15 @@ class DataQualityDevice(BaseModel):
         None, description="Longest time between two consecutive live readings in the window. Null with fewer than 2 readings.")
     silences_over_threshold: Optional[int] = Field(
         None, description="Silences longer than the offline threshold between consecutive live readings. Null with fewer than 2 readings.")
+    delay_measured: int = Field(
+        0, description="Live readings in the window that have a server receive time (received_at). Older and CSV-imported readings have none.")
+    avg_delay_s: Optional[float] = Field(
+        None, description="Mean of received_at - timestamp (server clock minus device clock), seconds. Null when nothing was measured.")
+    min_delay_s: Optional[float] = Field(
+        None, description="Smallest delay, seconds. Negative = device clock ahead of the server. Null when nothing was measured.")
+    max_delay_s: Optional[float] = Field(None, description="Largest delay, seconds. Null when nothing was measured.")
+    delayed_over_threshold: int = Field(
+        0, description="Measured readings that arrived more than the offline threshold after their timestamp")
 
     detections: int = Field(..., description="Live mosquito events in the window")
     detections_missing_p_mosq: int

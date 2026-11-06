@@ -149,6 +149,23 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
         .all()
     }
 
+    # 3b. Delivery delay: server receive time minus device timestamp, over
+    # live readings that have received_at (NULL = before the column existed,
+    # or CSV-imported: not measured, never 0). Negative = device clock ahead.
+    delay = extract("epoch", SensorDeviceReading.received_at) - ts
+    delays = {
+        row[0]: row[1:]
+        for row in session.query(
+            SensorDeviceReading.device_id,
+            func.count(SensorDeviceReading.id),
+            func.avg(delay), func.min(delay), func.max(delay),
+            _count_if(delay > threshold_s),
+        )
+        .filter(in_window, LIVE_SENSOR_READING, SensorDeviceReading.received_at.isnot(None))
+        .group_by(SensorDeviceReading.device_id)
+        .all()
+    }
+
     # 4. Detections. Outer join: an event without its reading row counts as
     # missing p_mosq and genus.
     genus_missing = or_(MosquitoIndividualReading.genus.is_(None),
@@ -184,6 +201,8 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
         if ongoing is not None and ongoing > threshold_s:
             over = (over or 0) + 1
             longest = max(longest or 0.0, ongoing)
+        measured, avg_d, min_d, max_d, delayed = delays.get(d.id, (0, None, None, None, 0))
+        delay_s = lambda v: round(float(v), 1) if v is not None else None  # noqa: E731
         det_total, det_no_p, det_no_genus, det_p_oor = detections.get(d.id, (0, 0, 0, 0))
         report.devices.append(DataQualityDevice(
             device_id=d.id, device_uuid=d.device_uuid, name=d.name,
@@ -201,6 +220,11 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
             battery_pct_out_of_range=batt_oor,
             longest_silence_min=round(longest / 60, 1) if longest is not None else None,
             silences_over_threshold=over,
+            delay_measured=measured,
+            avg_delay_s=delay_s(avg_d),
+            min_delay_s=delay_s(min_d),
+            max_delay_s=delay_s(max_d),
+            delayed_over_threshold=delayed,
             detections=det_total,
             detections_missing_p_mosq=det_no_p,
             detections_missing_genus=det_no_genus,

@@ -213,6 +213,10 @@ class SensorDeviceReading(Base):
     is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # Set only on rows created by a CSV import (NULL = sent by the device).
     import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("data_imports.id"), nullable=True, index=True)
+    # Server UTC time the row arrived over MQTT from the device. NULL = not
+    # measured: rows from before this column existed, CSV imports, manual HTTP
+    # posts, and MQTT messages without a usable device timestamp. Never backfilled.
+    received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     device: Mapped["Device"] = relationship("Device", back_populates="device_reading")
 
 
@@ -239,6 +243,8 @@ class MosquitoEvent(Base):
     is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # Set only on rows created by a CSV import (NULL = sent by the device).
     import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("data_imports.id"), nullable=True, index=True)
+    # Server UTC receive time; NULL = not measured (see SensorDeviceReading).
+    received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     device: Mapped["Device"] = relationship("Device", back_populates="mosquito_readings")
     mosquito_reading: Mapped["MosquitoIndividualReading | None"] = relationship(
         "MosquitoIndividualReading",

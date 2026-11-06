@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi_mqtt import FastMQTT, MQTTConfig
 from app.device.models import (
     DEVICE_SENT_SENSOR_READING, Device, SensorDeviceReading, MosquitoEvent, MosquitoIndividualReading,
@@ -38,27 +38,40 @@ mqtt_config = MQTTConfig(
 mqtt = FastMQTT(config=mqtt_config, client_id=CLIENT_ID)
 
 
-def _parse_timestamp(value) -> datetime:
-    """Parse sensor_data/mosquito_data 'timestamp' fields.
+def _device_time(value) -> datetime | None:
+    """Parse sensor_data/mosquito_data 'timestamp' fields to naive UTC, or
+    None when missing/unparseable.
 
     Per MQTT_Schema_Reference.pdf the real device always sends UTC epoch
     SECONDS as an integer — that's the authoritative format. ISO strings are
-    also accepted (REST callers, older test fixtures, already-parsed values).
+    also accepted (REST callers, older test fixtures, already-parsed values);
+    a tz-aware value is converted to UTC.
     """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            logger.warning(f"Could not parse timestamp '{value}', using utcnow")
+            return None
     if isinstance(value, datetime):
-        return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
             return datetime.utcfromtimestamp(value)
         except (ValueError, OSError, OverflowError):
             logger.warning(f"Could not parse epoch timestamp '{value}', using utcnow")
-            return datetime.utcnow()
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value)
-        except ValueError:
-            logger.warning(f"Could not parse timestamp '{value}', using utcnow")
-    return datetime.utcnow()
+    return None
+
+
+def _parse_timestamp(value) -> datetime:
+    """_device_time, falling back to the server's utcnow."""
+    return _device_time(value) or datetime.utcnow()
+
+
+def _received_at(device_ts: datetime | None) -> datetime | None:
+    """Server receive time — only when the device sent its own timestamp.
+    A defaulted timestamp is server time too, so its delay would be a fake ~0."""
+    return datetime.utcnow() if device_ts is not None else None
 
 
 def _apply_position_from_payload(db, device: Device, data: dict) -> None:
@@ -122,9 +135,10 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
         )
         previous_trap_on = bool(previous[0]) if previous else False
 
+    device_ts = _device_time(data.get("timestamp"))
     reading = SensorDeviceReading(
         device_id=device.id,
-        timestamp=_parse_timestamp(data.get("timestamp")),
+        timestamp=device_ts or datetime.utcnow(),
         external_temperature=data.get("temp_external"),
         internal_temperature=data.get("temp_internal"),
         external_humidity=data.get("humidity_external"),
@@ -137,6 +151,7 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
         trap_status=parse_trap_status(data.get("trap_status"), default=False),
         esp1_link_alive=data.get("esp1_link_alive"),
         is_test=is_test,
+        received_at=_received_at(device_ts),
     )
     db.add(reading)
     device.last_activity = datetime.utcnow()
@@ -244,11 +259,13 @@ def handle_mosquito_event(db, device: Device, data: dict, is_test: bool = False)
         return
 
     _apply_position_from_payload(db, device, data)
-    outer_timestamp = _parse_timestamp(data.get("timestamp"))
+    device_ts = _device_time(data.get("timestamp"))
+    outer_timestamp = device_ts or datetime.utcnow()
 
     saved = 0
     for mosquito_reading in readings:
-        event = MosquitoEvent(device_id=device.id, timestamp=outer_timestamp, count=1, is_test=is_test)
+        event = MosquitoEvent(device_id=device.id, timestamp=outer_timestamp, count=1, is_test=is_test,
+                             received_at=_received_at(device_ts))
         db.add(event)
         db.flush()
 
