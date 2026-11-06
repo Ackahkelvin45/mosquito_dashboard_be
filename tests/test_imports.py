@@ -570,3 +570,40 @@ def test_imported_rows_not_latest_reading(client, as_user, world, db_session):
     post(client, "sensor-readings", sensor_csv((d1, "2026-04-01T00:00:00Z", "99", "True")))
     db_session.expire_all()
     assert d1.latest_reading.external_temperature == 10.0
+
+
+def test_ingested_impossible_values_export_and_reimport(client, as_user, world, db_session):
+    """Readings that arrived over MQTT with impossible battery_pct / p_mosq
+    (stored as NULL by ingest) export and re-import with no errors."""
+    from app.core.mqtt_client import handle_mosquito_event, handle_sensor_data
+    d1 = world["d1"]
+    for i, battery in enumerate([255, -1, 87.5, "abc", float("nan"), 87.0, 0, 100]):
+        handle_sensor_data(db_session, d1, {
+            "timestamp": (T0 + timedelta(minutes=i)).isoformat(), "temp_external": 25.5,
+            "temp_internal": ["abc", float("nan"), "26.5"][i % 3], "esp1_link_alive": "yes",
+            "battery": 12.1, "battery_pct": battery, "trap_status": "OFF"})
+    for i, p in enumerate([1.3, float("nan"), -0.2, "abc", 0, 1, 0.42]):
+        ts = (T0 + timedelta(minutes=i)).isoformat()
+        handle_mosquito_event(db_session, d1, {"timestamp": ts, "mosquito_data": [
+            {"detection_timestamp": ts, "genus": "aedes", "sex": ["female", "f" * 51][i % 2],
+             "species": ["x" * 251, "=Aedes sp.", "a\x00b"][i % 3], "age_group": "", "p_mosq": p}]})
+
+    sensors = export(client, db_session, world["super"], "sensor-readings")
+    events = export(client, db_session, world["super"], "mosquito-events")
+    wipe_rows(db_session)
+    as_user(world["super"])
+    for kind, text in (("sensor-readings", sensors), ("mosquito-events", events)):
+        dry = post(client, kind, text, dry_run=True).json()
+        assert dry["error_count"] == 0, dry
+        assert post(client, kind, text).status_code == 200
+    assert without_id(export(client, db_session, world["super"], "sensor-readings")) == without_id(sensors)
+    assert without_id(export(client, db_session, world["super"], "mosquito-events")) == without_id(events)
+    assert sorted(r.battery_pct for r in db_session.query(SensorDeviceReading)
+                  if r.battery_pct is not None) == [0, 87, 100]
+    assert sorted(r.p_mosq for r in db_session.query(MosquitoIndividualReading)
+                  if r.p_mosq is not None) == [0, 0.42, 1]
+    assert sorted(r.internal_temperature for r in db_session.query(SensorDeviceReading)
+                  if r.internal_temperature is not None) == [26.5, 26.5]
+    assert sorted({r.species for r in db_session.query(MosquitoIndividualReading)}, key=str) == [
+        "=Aedes sp.", None]
+    assert {r.sex for r in db_session.query(MosquitoIndividualReading)} == {"female", ""}

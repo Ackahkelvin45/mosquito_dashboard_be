@@ -136,6 +136,7 @@ class TestMetrics:
         body, _ = report
         assert body["days"] == 7
         assert body["offline_threshold_min"] == 10
+        assert body["error_retention_days"] == 7
         assert (body["temp_min"], body["temp_max"]) == (5.0, 45.0)
         assert (body["humidity_min"], body["humidity_max"]) == (10.0, 98.0)
 
@@ -230,3 +231,53 @@ def test_delivery_delay(app, client, db_session, make_cluster, make_device, make
     for r in (rows[quiet.id], rows[old.id]):
         assert r["delay_measured"] == 0 and r["delayed_over_threshold"] == 0
         assert r["avg_delay_s"] is r["min_delay_s"] is r["max_delay_s"] is None
+
+
+class TestInvalidValuesReceived:
+    """invalid_values_received = "invalid_value" ingest-error rows for the
+    device (by device_uuid) inside the window, scoped like the rest."""
+
+    @pytest.fixture
+    def errors(self, db_session, world):
+        from app.monitoring.models import MqttIngestError
+        now = datetime.utcnow()
+        d1, d2 = world["d1"], world["d2"]
+        db_session.add_all([
+            MqttIngestError(error_type="invalid_value", device_uuid=d1.device_uuid,
+                            detail="battery_pct=255", occurred_at=now - timedelta(hours=1)),
+            MqttIngestError(error_type="invalid_value", device_uuid=d1.device_uuid,
+                            detail="p_mosq=1.3", occurred_at=now - timedelta(days=2)),
+            # After window_end (clock skew / a past-dated report).
+            MqttIngestError(error_type="invalid_value", device_uuid=d1.device_uuid,
+                            detail="p_mosq=7", occurred_at=now + timedelta(days=1)),
+            # Outside the 7-day window.
+            MqttIngestError(error_type="invalid_value", device_uuid=d1.device_uuid,
+                            detail="p_mosq=9", occurred_at=now - timedelta(days=8)),
+            # Other error types don't count.
+            MqttIngestError(error_type="empty_reading", device_uuid=d1.device_uuid, detail="{}"),
+            MqttIngestError(error_type="invalid_value", device_uuid=d2.device_uuid,
+                            detail="battery_pct=-1", occurred_at=now - timedelta(hours=1)),
+            # Unregistered uuid: matches no device.
+            MqttIngestError(error_type="invalid_value", device_uuid="ghost", detail="p_mosq=2"),
+        ])
+        db_session.commit()
+
+    def test_counted_per_device_in_window(self, app, client, world, errors):
+        _as(app, world["super"])
+        by_id = _by_id(client.get("/monitoring/data-quality").json())
+        assert {i: d["invalid_values_received"] for i, d in by_id.items()} == {
+            world["d1"].id: 2, world["d2"].id: 1, world["d3"].id: 0}
+        _as(app, world["super"])
+        by_id = _by_id(client.get("/monitoring/data-quality?days=30").json())
+        assert by_id[world["d1"].id]["invalid_values_received"] == 3
+
+    def test_scoped_to_admin_cluster(self, app, client, world, errors):
+        _as(app, world["admin"])
+        by_id = _by_id(client.get("/monitoring/data-quality").json())
+        assert {i: d["invalid_values_received"] for i, d in by_id.items()} == {
+            world["d1"].id: 2, world["d3"].id: 0}
+
+    def test_old_out_of_range_rows_still_counted(self, app, client, world, errors):
+        _as(app, world["super"])
+        d1 = _by_id(client.get("/monitoring/data-quality").json())[world["d1"].id]
+        assert (d1["battery_pct_out_of_range"], d1["detections_p_mosq_out_of_range"]) == (2, 1)

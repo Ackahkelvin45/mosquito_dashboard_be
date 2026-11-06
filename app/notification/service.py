@@ -10,6 +10,7 @@ Channel dispatch (push/email) runs on a daemon thread with its own
 SessionLocal (house pattern from device_location_service._dispatch_geocode)
 so request/MQTT paths are never blocked by network calls.
 """
+import hashlib
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -166,6 +167,7 @@ class NotificationService:
         in-app disabled, or the type is gated off by a preference toggle).
         `channels=False` creates the in-app row only, with no push/email.
         """
+        dedupe_key = _fit_dedupe_key(dedupe_key)
         if dedupe_key and dedupe_window_minutes:
             since = datetime.utcnow() - timedelta(minutes=dedupe_window_minutes)
             if self.notification_repository.find_recent_by_dedupe_key(dedupe_key, since):
@@ -232,6 +234,7 @@ class NotificationService:
         preference filtering, one bulk INSERT/commit. Returns rows created."""
         if not user_ids:
             return 0
+        dedupe_key = _fit_dedupe_key(dedupe_key)
         if dedupe_key and dedupe_window_minutes:
             since = datetime.utcnow() - timedelta(minutes=dedupe_window_minutes)
             if self.notification_repository.find_recent_by_dedupe_key(dedupe_key, since):
@@ -615,6 +618,15 @@ class NotificationService:
 _DISPATCH_EXECUTOR = ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="notify-dispatch"
 )
+
+
+def _fit_dedupe_key(key: Optional[str]) -> Optional[str]:
+    """Keys over the String(255) column (e.g. a long species label) become
+    prefix + sha1 of the whole key — stable, and two different long keys never
+    share a dedupe window, which a plain cut would allow."""
+    if key is None or len(key) <= 255:
+        return key
+    return key[:200] + ":" + hashlib.sha1(key.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _dispatch_channels(entries: List[tuple[int, int, bool, bool]]) -> None:

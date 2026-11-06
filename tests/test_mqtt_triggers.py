@@ -772,3 +772,236 @@ class TestReceivedAt:
         handle_sensor_data(db_session, make_device(), _sensor_payload(timestamp="2026-07-29T16:00:00+03:00"))
         r = db_session.query(SensorDeviceReading).one()
         assert r.timestamp == datetime(2026, 7, 29, 13, 0) and r.timestamp.tzinfo is None
+
+
+class TestImpossibleValues:
+    """battery_pct / p_mosq are range-checked by the CSV import; ingest applies
+    the same rule (app.device.imports.parse_bounded) so every export re-imports.
+    An impossible value is stored as NULL — never clamped — the rest of the
+    reading is kept, and the raw value is logged as an "invalid_value" error."""
+
+    @staticmethod
+    def _errors(db_session):
+        from app.monitoring.models import MqttIngestError
+        return [(e.error_type, e.device_uuid, e.detail) for e in db_session.query(MqttIngestError)]
+
+    @pytest.mark.parametrize("is_test", [False, True])
+    @pytest.mark.parametrize("bad, detail", [
+        (255, "battery_pct=255"), (-1, "battery_pct=-1"), (87.5, "battery_pct=87.5"),
+        ("abc", "battery_pct='abc'"), (float("nan"), "battery_pct=nan"), (True, "battery_pct=True"),
+    ])
+    def test_invalid_battery_pct_stored_null(self, db_session, super_admin, make_device, bad, detail, is_test):
+        device = make_device()
+        handle_sensor_data(db_session, device, _sensor_payload(battery_pct=bad, esp1_link_alive=True),
+                           is_test=is_test)
+        reading = db_session.query(SensorDeviceReading).one()
+        assert reading.battery_pct is None
+        assert (reading.external_temperature, reading.battery_voltage, reading.esp1_link_alive,
+                reading.is_test) == (30.2, 3.7, True, is_test)
+        assert self._errors(db_session) == [("invalid_value", device.device_uuid, detail)]
+
+    @pytest.mark.parametrize("good, stored", [(0, 0), (100, 100), (87, 87), (87.0, 87), ("87.0", 87), (" 42 ", 42)])
+    def test_valid_battery_pct_untouched(self, db_session, super_admin, make_device, good, stored):
+        device = make_device()
+        handle_sensor_data(db_session, device, _sensor_payload(battery_pct=good))
+        reading = db_session.query(SensorDeviceReading).one()
+        assert reading.battery_pct == stored and type(reading.battery_pct) is int
+        assert self._errors(db_session) == []
+
+    def test_missing_battery_pct_is_not_an_error(self, db_session, super_admin, make_device):
+        device = make_device()
+        handle_sensor_data(db_session, device, _sensor_payload(battery_pct=None))
+        assert db_session.query(SensorDeviceReading).one().battery_pct is None
+        assert self._errors(db_session) == []
+
+    @pytest.mark.parametrize("is_test", [False, True])
+    @pytest.mark.parametrize("bad, detail", [
+        (1.3, "p_mosq=1.3"), (-0.1, "p_mosq=-0.1"), (float("nan"), "p_mosq=nan"),
+        (float("inf"), "p_mosq=inf"), ("abc", "p_mosq='abc'"),
+    ])
+    def test_invalid_p_mosq_stored_null(self, db_session, super_admin, make_device, bad, detail, is_test):
+        device = make_device()
+        handle_mosquito_event(db_session, device, _mosquito_payload(p_mosq=bad, inference_ms=215),
+                              is_test=is_test)
+        individual = db_session.query(MosquitoIndividualReading).one()
+        assert individual.p_mosq is None
+        assert (individual.genus, individual.sex, individual.inference_ms) == ("Anopheles", "female", 215)
+        assert db_session.query(MosquitoEvent).one().is_test is is_test
+        db_session.refresh(device)
+        assert device.total_mosquito_count == (0 if is_test else 1)
+        assert self._errors(db_session) == [("invalid_value", device.device_uuid, detail)]
+
+    @pytest.mark.parametrize("good", [0, 1, 0.0, 1.0, 0.87, "0.5"])
+    def test_valid_p_mosq_untouched(self, db_session, super_admin, make_device, good):
+        device = make_device()
+        handle_mosquito_event(db_session, device, _mosquito_payload(p_mosq=good))
+        assert db_session.query(MosquitoIndividualReading).one().p_mosq == float(good)
+        assert self._errors(db_session) == []
+
+    def test_one_error_row_per_bad_detection(self, db_session, super_admin, make_device):
+        device = make_device()
+        payload = _mosquito_payload(p_mosq=2)
+        payload["mosquito_data"].append(dict(payload["mosquito_data"][0], p_mosq=0.4))
+        payload["mosquito_data"].append(dict(payload["mosquito_data"][0], p_mosq=-3))
+        handle_mosquito_event(db_session, device, payload)
+        assert sorted(r.p_mosq is None for r in db_session.query(MosquitoIndividualReading)) == [False, True, True]
+        assert [e[2] for e in self._errors(db_session)] == ["p_mosq=2", "p_mosq=-3"]
+
+    def test_detail_truncated_to_500(self, db_session, super_admin, make_device):
+        device = make_device()
+        handle_sensor_data(db_session, device, _sensor_payload(battery_pct="x" * 2000))
+        assert db_session.query(SensorDeviceReading).one().battery_pct is None
+        assert len(self._errors(db_session)[0][2]) == 500
+
+    # ── Every other field: numbers / flags / text / JSON ─────────────────────
+
+    @pytest.mark.parametrize("key, bad, column", [
+        ("temp_external", "abc", "external_temperature"),        # Postgres would refuse the row
+        ("humidity_internal", float("nan"), "internal_humidity"),
+        ("pressure_external", float("inf"), "external_pressure"),
+        ("pressure_internal", "1e999", "internal_pressure"),
+        ("humidity_external", "n/a", "external_humidity"),
+        ("battery", [3.7], "battery_voltage"),
+        ("external_light", True, "external_light"),
+        ("esp1_link_alive", "yes", "esp1_link_alive"),           # Boolean column raises today
+        ("esp1_link_alive", 2, "esp1_link_alive"),
+    ])
+    def test_invalid_sensor_field_stored_null(self, db_session, super_admin, make_device, key, bad, column):
+        device = make_device()
+        handle_sensor_data(db_session, device, _sensor_payload(**{key: bad}, battery_pct=80))
+        reading = db_session.query(SensorDeviceReading).one()
+        assert getattr(reading, column) is None
+        assert reading.battery_pct == 80 and reading.internal_temperature == 26.5
+        assert self._errors(db_session) == [("invalid_value", device.device_uuid, f"{key}={bad!r}")]
+
+    @pytest.mark.parametrize("key, good, column, stored", [
+        ("temp_external", "27.5", "external_temperature", 27.5),
+        ("temp_external", -40, "external_temperature", -40.0),
+        ("esp1_link_alive", 1, "esp1_link_alive", True),
+        ("esp1_link_alive", False, "esp1_link_alive", False),
+    ])
+    def test_valid_sensor_field_untouched(self, db_session, super_admin, make_device, key, good, column, stored):
+        device = make_device()
+        handle_sensor_data(db_session, device, _sensor_payload(**{key: good}))
+        assert getattr(db_session.query(SensorDeviceReading).one(), column) == stored
+        assert self._errors(db_session) == []
+
+    @pytest.mark.parametrize("key, bad, column, blank", [
+        ("species", "x" * 251, "species", None),                 # over String(250): blank, not truncated
+        ("genus", "a\x00b", "genus", None),                      # NUL: import rejects, Postgres refuses
+        ("species", {"name": "aedes"}, "species", None),         # not text
+        ("sex", "f" * 51, "sex", ""),                            # NOT NULL: blank is "" as for a missing sex
+        ("age_group", 7, "age_group", ""),
+        ("binary_decision", "maybe", "binary_decision", None),
+        ("inference_ms", "fast", "inference_ms", None),
+        ("inference_ms", 12.5, "inference_ms", None),
+        ("taxon_probs", {"aedes": float("nan")}, "taxon_probs", None),
+        ("species", "Aedes \ud800", "species", None),            # lone surrogate: not encodable UTF-8
+        ("sex_probs", {"\udfff": 0.5}, "sex_probs", None),
+    ])
+    def test_invalid_detection_field_blank(self, db_session, super_admin, make_device, key, bad, column, blank):
+        device = make_device()
+        handle_mosquito_event(db_session, device, _mosquito_payload(**{key: bad}, p_mosq=0.9))
+        individual = db_session.query(MosquitoIndividualReading).one()
+        assert getattr(individual, column) == blank
+        assert individual.p_mosq == 0.9 and individual.detection_timestamp is not None
+        assert self._errors(db_session) == [("invalid_value", device.device_uuid, f"{key}={bad!r}"[:500])]
+
+    def test_valid_detection_fields_untouched(self, db_session, super_admin, make_device):
+        device = make_device()
+        handle_mosquito_event(db_session, device, _mosquito_payload(
+            species="s" * 250, sex="f" * 50, binary_decision=True, inference_ms=215,
+            taxon_probs={"aedes": 0.91, "culex": 0}))
+        i = db_session.query(MosquitoIndividualReading).one()
+        assert (len(i.species), len(i.sex), i.binary_decision, i.inference_ms, i.taxon_probs) == (
+            250, 50, True, 215, {"aedes": 0.91, "culex": 0})
+        assert self._errors(db_session) == []
+
+    # ── Defaults that are stored but logged (NOT NULL columns) ───────────────
+
+    @pytest.mark.parametrize("raw, stored", [("garbage", False), (2, True), ([], False), (None, False)])
+    def test_unrecognised_trap_status_logged(self, db_session, super_admin, make_device, raw, stored):
+        device = make_device()
+        payload = _sensor_payload(trap_status=raw)
+        if raw is None:
+            del payload["trap_status"]
+        handle_sensor_data(db_session, device, payload)
+        assert db_session.query(SensorDeviceReading).one().trap_status is stored
+        assert self._errors(db_session) == [("invalid_value", device.device_uuid, f"trap_status={raw!r}")]
+
+    @pytest.mark.parametrize("raw", ["ON", " off ", True, False, 1, 0])
+    def test_recognised_trap_status_not_logged(self, db_session, super_admin, make_device, raw):
+        handle_sensor_data(db_session, make_device(), _sensor_payload(trap_status=raw))
+        assert self._errors(db_session) == []
+
+    @pytest.mark.parametrize("raw", ["not-a-date", None, True])
+    def test_defaulted_sensor_timestamp_logged(self, db_session, super_admin, make_device, raw):
+        device = make_device()
+        payload = _sensor_payload(timestamp=raw)
+        if raw is None:
+            del payload["timestamp"]
+        handle_sensor_data(db_session, device, payload)
+        reading = db_session.query(SensorDeviceReading).one()
+        assert reading.received_at is None
+        assert (datetime.utcnow() - reading.timestamp).total_seconds() < 5
+        assert self._errors(db_session) == [("invalid_value", device.device_uuid, f"timestamp={raw!r}")]
+
+    def test_defaulted_mosquito_timestamps_logged(self, db_session, super_admin, make_device):
+        device = make_device()
+        payload = _mosquito_payload(detection_timestamp="yesterday")
+        payload["timestamp"] = "soon"
+        handle_mosquito_event(db_session, device, payload)
+        assert db_session.query(MosquitoEvent).one().received_at is None
+        assert [e[2] for e in self._errors(db_session)] == ["timestamp='soon'", "detection_timestamp='yesterday'"]
+
+
+class TestNotificationNeverCostsADetection:
+    """SPECIES_DETECTED runs after the commit, with the stored (checked)
+    values: a failing emit rolls the session back, which must not discard the
+    event/reading or leave total_mosquito_count counting rows that were lost."""
+
+    def test_emits_after_commit_with_stored_values(self, db_session, super_admin, make_device, monkeypatch):
+        device = make_device()
+        calls = []
+
+        def fake_emit(db, event, **ctx):
+            # Everything is already committed when any notification runs.
+            assert not db.new and not db.dirty
+            calls.append((str(event), ctx.get("species"), ctx.get("sex")))
+            db.rollback()  # what emit does when a handler poisons the session
+
+        monkeypatch.setattr(mqtt_client, "emit", fake_emit)
+        handle_mosquito_event(db_session, device, _mosquito_payload(species="x" * 251, sex="f" * 51))
+        assert calls[0] == (str(mqtt_client.NotificationEvent.SPECIES_DETECTED), None, "")
+        assert db_session.query(MosquitoIndividualReading).count() == 1
+        assert db_session.query(MosquitoEvent).count() == 1
+        db_session.refresh(device)
+        assert device.total_mosquito_count == 1
+
+    def test_failing_notification_keeps_every_detection(self, db_session, super_admin, make_device, monkeypatch):
+        from app.notification import events
+        device = make_device()
+
+        def boom(service, **_):
+            # As a failed notification flush on Postgres: the session is rolled back.
+            service.session.rollback()
+            raise RuntimeError("notification insert failed")
+        monkeypatch.setitem(events._HANDLERS, events.NotificationEvent.SPECIES_DETECTED, boom)
+        payload = _mosquito_payload()
+        payload["mosquito_data"].append(dict(payload["mosquito_data"][0]))
+        handle_mosquito_event(db_session, device, payload)
+        assert db_session.query(MosquitoIndividualReading).count() == 2
+        db_session.refresh(device)
+        assert device.total_mosquito_count == 2
+
+    def test_long_species_dedupe_key_fits_and_stays_distinct(self, db_session, super_admin, make_device):
+        device = make_device()
+        for tail in ("a", "b", "a"):
+            handle_mosquito_event(db_session, device, _mosquito_payload(
+                species="Aedes " + "x" * 243 + tail, genus="aedes"))
+        rows = db_session.query(Notification).filter(
+            Notification.notification_type == NotificationType.SPECIES_DETECTED).all()
+        keys = {n.dedupe_key for n in rows}
+        # Two different 250-char species: two notifications; the repeat is deduped.
+        assert len(rows) == 2 and len(keys) == 2
+        assert all(len(k) <= 255 for k in keys)

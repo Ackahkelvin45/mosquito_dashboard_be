@@ -85,6 +85,12 @@ class DataQualityDevice(BaseModel):
     detections_missing_genus: int
     detections_p_mosq_out_of_range: int = Field(..., description="p_mosq outside 0-1")
     excluded_detections: int = Field(0, description="Live mosquito events in the window an admin excluded from analysis (still counted in the figures here)")
+    invalid_values_received: int = Field(
+        0, description="Field values the device sent that were impossible (battery_pct/p_mosq out of range, a number field "
+                       "that isn't a finite number, text too long for its column, ...), stored as blank; plus a missing "
+                       "or unreadable trap_status or timestamp, which can't be blank and was stored as OFF / server time. "
+                       "Counted from the System Health error log by receive time, test mode included; that log keeps "
+                       "error_retention_days days, so longer windows only count the retained part.")
 
 
 class DataQualityReport(BaseModel):
@@ -92,6 +98,7 @@ class DataQualityReport(BaseModel):
     window_start: datetime
     window_end: datetime
     offline_threshold_min: int = Field(..., description="Silence threshold used for silences_over_threshold (same as the offline alert)")
+    error_retention_days: int = Field(7, description="Days the ingest error log is kept (bounds invalid_values_received)")
     temp_min: float
     temp_max: float
     humidity_min: float

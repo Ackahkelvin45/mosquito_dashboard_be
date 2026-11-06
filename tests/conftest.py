@@ -47,6 +47,7 @@ from app.core.database import Base, get_db
 import app.authentication.models  # noqa: F401
 import app.api_access.models  # noqa: F401
 import app.device.models  # noqa: F401
+import app.monitoring.models  # noqa: F401
 import app.notification.models  # noqa: F401
 
 from app.authentication.enums import ApprovalStatus, UserRole

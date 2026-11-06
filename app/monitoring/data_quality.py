@@ -30,6 +30,8 @@ from app.device.models import (
     SensorDeviceReading,
 )
 from app.device.schema import OFFLINE_AFTER_MIN
+from app.jobs.cleanup import MONITOR_ERROR_RETENTION_DAYS
+from app.monitoring.models import MqttIngestError
 from app.monitoring.schema import DataQualityDevice, DataQualityReport
 from app.notification.alert_settings import get_thresholds
 
@@ -79,6 +81,7 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
     report = DataQualityReport(
         days=days, window_start=window_start, window_end=window_end,
         offline_threshold_min=OFFLINE_AFTER_MIN,
+        error_retention_days=MONITOR_ERROR_RETENTION_DAYS,
         temp_min=limits.temp_min, temp_max=limits.temp_max,
         humidity_min=limits.humidity_min, humidity_max=limits.humidity_max,
     )
@@ -195,6 +198,21 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
     )
     detections = {row[0]: row[1:] for row in detection_rows}
 
+    # 5. Values ingest received but stored blank (impossible, or rejected by
+    # the CSV import / the DB), logged as "invalid_value" ingest errors — by server receive
+    # time, matched on device_uuid (error rows have no device_id).
+    invalid_received = dict(
+        session.query(MqttIngestError.device_uuid, func.count(MqttIngestError.id))
+        .filter(
+            MqttIngestError.error_type == "invalid_value",
+            MqttIngestError.device_uuid.in_([d.device_uuid for d in devices]),
+            MqttIngestError.occurred_at >= window_start,
+            MqttIngestError.occurred_at <= window_end,
+        )
+        .group_by(MqttIngestError.device_uuid)
+        .all()
+    )
+
     for d in devices:
         total, last_at, temp_oor, hum_oor, batt_oor, excl, *non_null = sensor.get(d.id, (0, None, 0, 0, 0, 0))
         longest, over = gaps.get(d.id, (None, None))
@@ -235,6 +253,7 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
             detections_missing_genus=det_no_genus,
             detections_p_mosq_out_of_range=det_p_oor,
             excluded_detections=det_excl,
+            invalid_values_received=invalid_received.get(d.device_uuid, 0),
         ))
     return report
 

@@ -8,6 +8,7 @@ from app.device.models import (
 from app.device.sightings import extract_raw_fix, record_sighting
 from app.core.database import SessionLocal
 from app.core.config import settings
+from app.device.imports import MOSQUITO_STRINGS, RowError, parse_bounded, parse_float
 from app.monitoring import recorder
 from app.notification.events import NotificationEvent, emit
 from app.service.device_location_service import apply_reported_position
@@ -63,15 +64,78 @@ def _device_time(value) -> datetime | None:
     return None
 
 
-def _parse_timestamp(value) -> datetime:
-    """_device_time, falling back to the server's utcnow."""
-    return _device_time(value) or datetime.utcnow()
+def _logged_time(source: dict, key: str, invalid: list) -> datetime | None:
+    """_device_time(source[key]); when missing or unparseable the caller falls
+    back to server time (the columns are NOT NULL), so record that in
+    `invalid` — the stored time is not the device's."""
+    ts = _device_time(source.get(key))
+    if ts is None:
+        invalid.append(f"{key}={source.get(key)!r}"[:500])
+    return ts
 
 
 def _received_at(device_ts: datetime | None) -> datetime | None:
     """Server receive time — only when the device sent its own timestamp.
     A defaulted timestamp is server time too, so its delay would be a fake ~0."""
     return datetime.utcnow() if device_ts is not None else None
+
+
+# ── Field checks ─────────────────────────────────────────────────────────────
+# A value that can't be stored as sent — one the CSV import would reject, or
+# one the DB would refuse (losing the whole message) — is stored blank, never
+# clamped or truncated, and its raw form logged as an "invalid_value" error.
+# Numbers and text use the import's own rules so every export re-imports.
+
+def _checked(source: dict, key: str, invalid: list, parse):
+    """parse(source[key]), or None (+ "key=repr" in `invalid`) when it raises.
+    Missing/None is simply None, not an error."""
+    value = source.get(key)
+    if value is None:
+        return None
+    try:
+        return parse(value)
+    except (RowError, ValueError, TypeError):
+        invalid.append(f"{key}={value!r}"[:500])
+        return None
+
+
+def _number(value):
+    """Finite number (numeric strings too), as the import's parse_float."""
+    return parse_float(str(value), "")
+
+
+def _bounded(low: float, high: float, whole: bool = False):
+    return lambda value: parse_bounded(str(value), "", low, high, whole=whole)
+
+
+def _flag(value):
+    """True/False (or 1/0) — anything else makes the Boolean column raise."""
+    if value not in (True, False):
+        raise ValueError
+    return bool(value)
+
+
+def _text(max_len: int):
+    """A string that fits its column, without NUL — as the import requires."""
+    def parse(value):
+        if not isinstance(value, str) or "\x00" in value or len(value) > max_len:
+            raise ValueError
+        value.encode("utf-8")  # a lone surrogate ("\ud800") fails at commit otherwise
+        return value
+    return parse
+
+
+def _strict_json(value):
+    """JSON without NaN/Infinity, which Postgres json rejects."""
+    json.dumps(value, allow_nan=False, ensure_ascii=False).encode("utf-8")  # + lone surrogates
+    return value
+
+
+def _record_invalid(db, device: Device, invalid: list) -> None:
+    """One "invalid_value" System Health row per blanked field (after the
+    reading is committed; record_error is failure-proof and truncates)."""
+    for detail in invalid:
+        recorder.record_error(db, "invalid_value", device_uuid=device.device_uuid, detail=detail)
 
 
 def _apply_position_from_payload(db, device: Device, data: dict) -> None:
@@ -135,21 +199,29 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
         )
         previous_trap_on = bool(previous[0]) if previous else False
 
-    device_ts = _device_time(data.get("timestamp"))
+    invalid: list[str] = []
+    device_ts = _logged_time(data, "timestamp", invalid)
+    raw_trap = data.get("trap_status")
+    if not (raw_trap in (True, False)
+            or (isinstance(raw_trap, str) and raw_trap.strip().upper() in ("ON", "OFF"))):
+        # NOT NULL column: parse_trap_status coerces (bool(value), so 2 → ON)
+        # or defaults it to OFF — logged, so the guess is visible.
+        invalid.append(f"trap_status={raw_trap!r}"[:500])
+    number = lambda key: _checked(data, key, invalid, _number)  # noqa: E731
     reading = SensorDeviceReading(
         device_id=device.id,
         timestamp=device_ts or datetime.utcnow(),
-        external_temperature=data.get("temp_external"),
-        internal_temperature=data.get("temp_internal"),
-        external_humidity=data.get("humidity_external"),
-        internal_humidity=data.get("humidity_internal"),
-        internal_pressure=data.get("pressure_internal"),
-        external_pressure=data.get("pressure_external"),
-        external_light=data.get("external_light"),
-        battery_voltage=data.get("battery"),
-        battery_pct=data.get("battery_pct"),
-        trap_status=parse_trap_status(data.get("trap_status"), default=False),
-        esp1_link_alive=data.get("esp1_link_alive"),
+        external_temperature=number("temp_external"),
+        internal_temperature=number("temp_internal"),
+        external_humidity=number("humidity_external"),
+        internal_humidity=number("humidity_internal"),
+        internal_pressure=number("pressure_internal"),
+        external_pressure=number("pressure_external"),
+        external_light=number("external_light"),
+        battery_voltage=number("battery"),
+        battery_pct=_checked(data, "battery_pct", invalid, _bounded(0, 100, whole=True)),
+        trap_status=parse_trap_status(raw_trap, default=False),
+        esp1_link_alive=_checked(data, "esp1_link_alive", invalid, _flag),
         is_test=is_test,
         received_at=_received_at(device_ts),
     )
@@ -164,6 +236,7 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
         f"Sensor reading saved for device {device.device_uuid}"
         + (" [TEST — no notifications]" if is_test else "")
     )
+    _record_invalid(db, device, invalid)
 
     all_fields_empty = all(v is None for v in (
         reading.external_temperature, reading.internal_temperature,
@@ -259,11 +332,14 @@ def handle_mosquito_event(db, device: Device, data: dict, is_test: bool = False)
         return
 
     _apply_position_from_payload(db, device, data)
-    device_ts = _device_time(data.get("timestamp"))
+    invalid: list[str] = []
+    device_ts = _logged_time(data, "timestamp", invalid)
     outer_timestamp = device_ts or datetime.utcnow()
 
     saved = 0
+    detected: list[dict] = []
     for mosquito_reading in readings:
+        text = lambda key: _checked(mosquito_reading, key, invalid, _text(MOSQUITO_STRINGS[key]))  # noqa: E731
         event = MosquitoEvent(device_id=device.id, timestamp=outer_timestamp, count=1, is_test=is_test,
                              received_at=_received_at(device_ts))
         db.add(event)
@@ -271,38 +347,42 @@ def handle_mosquito_event(db, device: Device, data: dict, is_test: bool = False)
 
         individual = MosquitoIndividualReading(
             batch_id=event.id,
-            detection_timestamp=_parse_timestamp(mosquito_reading.get("detection_timestamp")),
-            species=mosquito_reading.get("species"),
-            genus=mosquito_reading.get("genus"),
+            detection_timestamp=_logged_time(mosquito_reading, "detection_timestamp", invalid) or datetime.utcnow(),
+            species=text("species"),
+            genus=text("genus"),
             # age_group/sex columns are NOT NULL; the schema guarantees the
-            # keys (age_group is always "" today), but a malformed entry must
-            # degrade to "" rather than blow up the whole message's commit.
-            age_group=mosquito_reading.get("age_group") or "",
-            sex=mosquito_reading.get("sex") or "",
-            p_mosq=mosquito_reading.get("p_mosq"),
-            binary_decision=mosquito_reading.get("binary_decision"),
-            taxon_probs=mosquito_reading.get("taxon_probs"),
-            sex_probs=mosquito_reading.get("sex_probs"),
-            inference_ms=mosquito_reading.get("inference_ms"),
+            # keys (age_group is always "" today), but a missing or invalid
+            # value must degrade to "" rather than blow up the whole commit.
+            age_group=text("age_group") or "",
+            sex=text("sex") or "",
+            p_mosq=_checked(mosquito_reading, "p_mosq", invalid, _bounded(0, 1)),
+            binary_decision=_checked(mosquito_reading, "binary_decision", invalid, _flag),
+            taxon_probs=_checked(mosquito_reading, "taxon_probs", invalid, _strict_json),
+            sex_probs=_checked(mosquito_reading, "sex_probs", invalid, _strict_json),
+            # Not exported/imported; whole ms that fits the Integer column.
+            inference_ms=_checked(mosquito_reading, "inference_ms", invalid, _bounded(0, 2**31 - 1, whole=True)),
         )
         db.add(individual)
         saved += 1
 
-        if not is_test:
-            emit(db, NotificationEvent.SPECIES_DETECTED, device=device,
-                 species=mosquito_reading.get("species"), genus=mosquito_reading.get("genus"),
-                 sex=mosquito_reading.get("sex"), age_group=mosquito_reading.get("age_group"))
+        # The stored (checked) values, emitted only after the commit: a failed
+        # emit rolls the session back and must never cost the detection.
+        detected.append({"species": individual.species, "genus": individual.genus,
+                         "sex": individual.sex, "age_group": individual.age_group})
 
     device.last_activity = datetime.utcnow()
+    if not is_test:
+        device.total_mosquito_count = (device.total_mosquito_count or 0) + saved
+    db.commit()
+    _record_invalid(db, device, invalid)
     if is_test:
-        db.commit()
         logger.info(f"{saved} TEST mosquito event(s) saved for device {device.device_uuid} — not counted")
         return
 
-    device.total_mosquito_count = (device.total_mosquito_count or 0) + saved
-    db.commit()
     logger.info(f"{saved} mosquito event(s) saved for device {device.device_uuid}")
 
+    for fields in detected:
+        emit(db, NotificationEvent.SPECIES_DETECTED, device=device, **fields)
     emit(db, NotificationEvent.ACTIVITY_SURGE, device=device)
 
 
