@@ -167,6 +167,21 @@ class TestActivitySurge:
         assert len(rows) == 1
         assert rows[0].payload["count"] == events.NOTIFY_SURGE_THRESHOLD + 1
 
+    def test_imported_events_not_counted_toward_surge(self, db_session, super_admin, make_device):
+        from app.device.models import DataImport
+        device = make_device()
+        batch = DataImport(kind="mosquito-events", rows_total=1, rows_imported=1, rows_skipped=0,
+                           imported_by_user_id=super_admin.id)
+        db_session.add(batch)
+        db_session.flush()
+        now = datetime.utcnow()
+        for _ in range(events.NOTIFY_SURGE_THRESHOLD + 1):
+            db_session.add(MosquitoEvent(device_id=device.id, timestamp=now, count=1,
+                                         import_batch_id=batch.id))
+        db_session.commit()
+        emit(db_session, NotificationEvent.ACTIVITY_SURGE, device=device)
+        assert _rows(db_session, NotificationType.ACTIVITY_SURGE) == []
+
     def test_computed_count_below_threshold_no_alert(self, db_session, super_admin,
                                                      make_device):
         device = make_device()

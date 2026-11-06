@@ -105,7 +105,8 @@ class Device(Base):
             Device.id == SensorDeviceReading.device_id,
             SensorDeviceReading.id
             == select(SensorDeviceReading.id)
-            .where(SensorDeviceReading.device_id == Device.id, SensorDeviceReading.is_test.is_(False))
+            .where(SensorDeviceReading.device_id == Device.id, SensorDeviceReading.is_test.is_(False),
+                   SensorDeviceReading.import_batch_id.is_(None))
             .order_by(
                 SensorDeviceReading.timestamp.desc(),
                 SensorDeviceReading.id.desc(),
@@ -162,6 +163,26 @@ class UnregisteredDeviceSighting(Base):
                 f"count={self.message_count}, last_seen={self.last_seen})")
 
 
+class DataImport(Base):
+    """One CSV batch imported by a stakeholder (POST /imports/*). Rows it
+    created carry import_batch_id, so imported data stays distinguishable
+    from device-sent data and a batch can be removed as a unit."""
+    __tablename__ = "data_imports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # "sensor-readings" | "mosquito-events"
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The single cluster every row's device belongs to — the batch's scope for
+    # cluster admins. NULL = rows span clusters (super admin only). No FK:
+    # an audit-ish record must not block deleting a cluster.
+    cluster_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    rows_total: Mapped[int] = mapped_column(Integer)
+    rows_imported: Mapped[int] = mapped_column(Integer)
+    rows_skipped: Mapped[int] = mapped_column(Integer)
+    imported_by_user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SensorDeviceReading(Base):
     __tablename__ = "sensor_device_readings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
@@ -186,6 +207,8 @@ class SensorDeviceReading(Base):
     # True when this arrived on the "_test"-suffixed topic (device in Test
     # mode) — excluded from notifications/trap-flip state, see mqtt_client.py.
     is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Set only on rows created by a CSV import (NULL = sent by the device).
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("data_imports.id"), nullable=True, index=True)
     device: Mapped["Device"] = relationship("Device", back_populates="device_reading")
 
 
@@ -206,6 +229,8 @@ class MosquitoEvent(Base):
     # True when this arrived on the "_test"-suffixed topic (device in Test
     # mode) — excluded from device.total_mosquito_count and notifications.
     is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Set only on rows created by a CSV import (NULL = sent by the device).
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("data_imports.id"), nullable=True, index=True)
     device: Mapped["Device"] = relationship("Device", back_populates="mosquito_readings")
     mosquito_reading: Mapped["MosquitoIndividualReading | None"] = relationship(
         "MosquitoIndividualReading",
@@ -254,3 +279,9 @@ class MosquitoIndividualReading(Base):
 # public API or summaries. Use these in every read query instead of inlining.
 LIVE_SENSOR_READING = SensorDeviceReading.is_test.is_(False)
 LIVE_MOSQUITO_EVENT = MosquitoEvent.is_test.is_(False)
+
+# Device-state filters: rows the device itself sent (not CSV-imported). Imported
+# rows are real data for charts/exports, but must never drive live state —
+# trap-flip, activity surge, stuck-sensor, latest_reading.
+DEVICE_SENT_SENSOR_READING = SensorDeviceReading.import_batch_id.is_(None)
+DEVICE_SENT_MOSQUITO_EVENT = MosquitoEvent.import_batch_id.is_(None)

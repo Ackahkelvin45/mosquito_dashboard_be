@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timedelta
 
 from app.core.database import SessionLocal
-from app.device.models import Device, SensorDeviceReading, LIVE_SENSOR_READING
+from app.device.models import Device, SensorDeviceReading, LIVE_SENSOR_READING, DEVICE_SENT_SENSOR_READING
 from app.notification.events import NotificationEvent, emit
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,8 @@ def run_health_sweep() -> None:
         for device in active_devices:
             readings = (
                 session.query(SensorDeviceReading)
-                .filter(SensorDeviceReading.device_id == device.id, LIVE_SENSOR_READING)
+                .filter(SensorDeviceReading.device_id == device.id, LIVE_SENSOR_READING,
+                        DEVICE_SENT_SENSOR_READING)
                 .order_by(
                     SensorDeviceReading.timestamp.desc(),
                     SensorDeviceReading.id.desc(),

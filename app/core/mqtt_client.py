@@ -2,7 +2,9 @@ import json
 import logging
 from datetime import datetime
 from fastapi_mqtt import FastMQTT, MQTTConfig
-from app.device.models import Device, SensorDeviceReading, MosquitoEvent, MosquitoIndividualReading
+from app.device.models import (
+    DEVICE_SENT_SENSOR_READING, Device, SensorDeviceReading, MosquitoEvent, MosquitoIndividualReading,
+)
 from app.device.sightings import extract_raw_fix, record_sighting
 from app.core.database import SessionLocal
 from app.core.config import settings
@@ -114,7 +116,7 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
         previous = (
             db.query(SensorDeviceReading.trap_status)
             .filter(SensorDeviceReading.device_id == device.id,
-                    SensorDeviceReading.is_test.is_(False))
+                    SensorDeviceReading.is_test.is_(False), DEVICE_SENT_SENSOR_READING)
             .order_by(SensorDeviceReading.timestamp.desc(), SensorDeviceReading.id.desc())
             .first()
         )

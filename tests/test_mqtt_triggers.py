@@ -98,6 +98,23 @@ class TestHandleSensorData:
         assert rows[0].user_id == super_admin.id
         assert rows[0].severity == NotificationSeverity.WARNING
 
+    def test_imported_trap_on_row_does_not_suppress_flip(self, db_session, super_admin, make_device):
+        # A CSV-imported reading (import_batch_id set) is history, not the
+        # device's current state: a later-timestamped imported trap=ON must
+        # not hide the real OFF->ON flip.
+        from app.device.models import DataImport
+        device = make_device()
+        handle_sensor_data(db_session, device, _sensor_payload(trap_status=False))
+        batch = DataImport(kind="sensor-readings", rows_total=1, rows_imported=1, rows_skipped=0,
+                           imported_by_user_id=super_admin.id)
+        db_session.add(batch)
+        db_session.flush()
+        db_session.add(SensorDeviceReading(device_id=device.id, timestamp=datetime(2026, 7, 30, 11),
+                                           trap_status=True, import_batch_id=batch.id))
+        db_session.commit()
+        handle_sensor_data(db_session, device, _sensor_payload(trap_status=True))
+        assert _types(db_session).count(NotificationType.TRAP_TRIGGERED) == 1
+
     def test_trap_transition_false_to_true_only(self, db_session, super_admin,
                                                 make_device, backdate_dedupe_key):
         device = make_device()

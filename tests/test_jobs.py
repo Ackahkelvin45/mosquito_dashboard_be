@@ -417,6 +417,24 @@ class TestHealthSweep:
         health_module.run_health_sweep()
         assert len(_types(db_session, NotificationType.SENSOR_MALFUNCTION)) == 1
 
+    def test_imported_identical_readings_not_stuck(self, db_session, super_admin, make_device,
+                                                   patch_job_sessions):
+        from app.device.models import DataImport
+        device = make_device(last_activity=datetime.utcnow())
+        batch = DataImport(kind="sensor-readings", rows_total=5, rows_imported=5, rows_skipped=0,
+                           imported_by_user_id=super_admin.id)
+        db_session.add(batch)
+        db_session.flush()
+        now = datetime.utcnow()
+        for index in range(5):
+            db_session.add(SensorDeviceReading(
+                device_id=device.id, timestamp=now - timedelta(minutes=index),
+                external_temperature=25.0, battery_voltage=3.8, import_batch_id=batch.id,
+            ))
+        db_session.commit()
+        health_module.run_health_sweep()
+        assert _types(db_session, NotificationType.SENSOR_MALFUNCTION) == []
+
     def test_varying_readings_not_stuck(self, db_session, super_admin, make_device,
                                         patch_job_sessions):
         device = make_device(last_activity=datetime.utcnow())
