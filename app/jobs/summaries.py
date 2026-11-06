@@ -24,6 +24,7 @@ from app.device.models import (
     DeviceCluster,
     MosquitoEvent,
     MosquitoIndividualReading,
+    LIVE_MOSQUITO_EVENT,
 )
 from app.notification.alert_settings import get_thresholds
 from app.notification.events import NotificationEvent, emit
@@ -78,6 +79,7 @@ def _device_group_stats(session, devices, since: datetime) -> dict:
         window = (
             MosquitoEvent.device_id.in_(device_ids),
             MosquitoEvent.timestamp >= since,
+            LIVE_MOSQUITO_EVENT,
         )
         mosquito_events = (
             session.query(func.count(MosquitoEvent.id)).filter(*window).scalar() or 0

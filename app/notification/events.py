@@ -58,7 +58,7 @@ from enum import StrEnum
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.device.models import MosquitoEvent
+from app.device.models import MosquitoEvent, LIVE_MOSQUITO_EVENT
 from app.notification.alert_settings import get_thresholds
 from app.notification.enums import (
     NotificationCategory,
@@ -228,7 +228,8 @@ def _activity_surge(service, *, device, count=None, **_):
         since = datetime.utcnow() - timedelta(minutes=limits.surge_window_min)
         count = (
             service.session.query(func.count(MosquitoEvent.id))
-            .filter(MosquitoEvent.device_id == device.id, MosquitoEvent.timestamp >= since)
+            .filter(MosquitoEvent.device_id == device.id, MosquitoEvent.timestamp >= since,
+                    LIVE_MOSQUITO_EVENT)
             .scalar()
             or 0
         )

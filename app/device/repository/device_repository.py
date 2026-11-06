@@ -2,7 +2,10 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, and_, func
 from typing import Optional, List
 from app.crud.base import BaseRepository
-from app.device.models import Device,DeviceCluster,SensorDeviceReading,MosquitoEvent,MosquitoIndividualReading
+from app.device.models import (
+    Device, DeviceCluster, SensorDeviceReading, MosquitoEvent, MosquitoIndividualReading,
+    LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING,
+)
 from app.device.schema import DeviceCreate, DeviceUpdate,SensorDataPayload,MosquitoEventPayload
 from datetime import datetime, timezone
 from fastapi import HTTPException
@@ -169,6 +172,7 @@ class DeviceRepository(BaseRepository[Device]):
                     SensorDeviceReading.device_id,
                     func.max(SensorDeviceReading.timestamp).label("max_ts"),
                 )
+                .filter(LIVE_SENSOR_READING)
                 .group_by(SensorDeviceReading.device_id)
                 .subquery()
             )
@@ -179,6 +183,7 @@ class DeviceRepository(BaseRepository[Device]):
                     and_(
                         SensorDeviceReading.device_id == Device.id,
                         SensorDeviceReading.timestamp == latest_reading.c.max_ts,
+                        LIVE_SENSOR_READING,
                     ),
                 )
                 .filter(SensorDeviceReading.trap_status == trap_status)
@@ -199,6 +204,7 @@ class DeviceRepository(BaseRepository[Device]):
             self.session.query(MosquitoIndividualReading.genus, MosquitoIndividualReading.species)
             .join(MosquitoEvent, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
             .join(Device, MosquitoEvent.device_id == Device.id)
+            .filter(LIVE_MOSQUITO_EVENT)
         )
         if allowed_cluster_ids is not None:
             reading_query = reading_query.filter(Device.cluster_id.in_(allowed_cluster_ids))
@@ -263,7 +269,7 @@ class DeviceRepository(BaseRepository[Device]):
     def get_sensor_readings(self, device_id: int) -> List[SensorDeviceReading]:
         return (
             self.session.query(SensorDeviceReading)
-            .filter(SensorDeviceReading.device_id == device_id)
+            .filter(SensorDeviceReading.device_id == device_id, LIVE_SENSOR_READING)
             .order_by(SensorDeviceReading.timestamp.desc())
             .all()
         )
@@ -313,6 +319,8 @@ class DeviceRepository(BaseRepository[Device]):
         cluster_id: List[int] | None = None,
         allowed_cluster_ids: Optional[set] = None,
     ):
+        # Every event list (per-device, Historical Data) passes through here.
+        query = query.filter(LIVE_MOSQUITO_EVENT)
         if start_date is not None:
             start_date = to_utc_naive(start_date)
         if end_date is not None:
@@ -437,6 +445,7 @@ class DeviceRepository(BaseRepository[Device]):
         q = (
             self.session.query(SensorDeviceReading)
             .join(Device, SensorDeviceReading.device_id == Device.id)
+            .filter(LIVE_SENSOR_READING)
         )
         if start_date:
             q = q.filter(SensorDeviceReading.timestamp >= start_date)
@@ -562,7 +571,8 @@ class DeviceRepository(BaseRepository[Device]):
         )
 
         device = self.session.query(Device).filter(Device.id == device_id).first()
-        if device and readings_deleted:
+        # Test events were never added to the count at ingest, so don't subtract them.
+        if device and readings_deleted and not event.is_test:
             device.total_mosquito_count = max(0, (device.total_mosquito_count or 0) - readings_deleted)
 
         self.session.delete(event)
@@ -571,4 +581,10 @@ class DeviceRepository(BaseRepository[Device]):
 
 
     def get_all_mosquito_readings(self)->List[MosquitoIndividualReading]:
-        return self.session.query(MosquitoIndividualReading).order_by(MosquitoIndividualReading.detection_timestamp.desc()).all()
+        return (
+            self.session.query(MosquitoIndividualReading)
+            .join(MosquitoEvent, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
+            .filter(LIVE_MOSQUITO_EVENT)
+            .order_by(MosquitoIndividualReading.detection_timestamp.desc())
+            .all()
+        )

@@ -22,6 +22,8 @@ from app.device.models import (
     MosquitoEvent,
     MosquitoIndividualReading,
     SensorDeviceReading,
+    LIVE_MOSQUITO_EVENT,
+    LIVE_SENSOR_READING,
 )
 
 # ── Datasets ─────────────────────────────────────────────────────────────────
@@ -184,6 +186,7 @@ def sensor_readings_stmt(
     stmt = (
         select(*[SENSOR_READING_COLUMNS[f] for f in field_names])
         .join(Device, SensorDeviceReading.device_id == Device.id)
+        .where(LIVE_SENSOR_READING)
     )
     stmt = apply_scope(stmt, allowed)
     if device_uuids:
@@ -219,6 +222,7 @@ def mosquito_events_stmt(
             MosquitoIndividualReading,
             MosquitoIndividualReading.batch_id == MosquitoEvent.id,
         )
+        .where(LIVE_MOSQUITO_EVENT)
     )
     stmt = apply_scope(stmt, allowed)
     if device_uuids:

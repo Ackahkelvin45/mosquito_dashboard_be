@@ -105,7 +105,7 @@ class Device(Base):
             Device.id == SensorDeviceReading.device_id,
             SensorDeviceReading.id
             == select(SensorDeviceReading.id)
-            .where(SensorDeviceReading.device_id == Device.id)
+            .where(SensorDeviceReading.device_id == Device.id, SensorDeviceReading.is_test.is_(False))
             .order_by(
                 SensorDeviceReading.timestamp.desc(),
                 SensorDeviceReading.id.desc(),
@@ -247,3 +247,10 @@ class MosquitoIndividualReading(Base):
         if self.batch and self.batch.device:
             return self.batch.device.device_uuid
         return None
+
+
+# Read-path filters: live data only. Test-mode rows ("_test" topics) are kept
+# for connectivity checks but must never reach charts, tables, exports, the
+# public API or summaries. Use these in every read query instead of inlining.
+LIVE_SENSOR_READING = SensorDeviceReading.is_test.is_(False)
+LIVE_MOSQUITO_EVENT = MosquitoEvent.is_test.is_(False)

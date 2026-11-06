@@ -3,7 +3,10 @@ from sqlalchemy import func
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
-from app.device.models import MosquitoEvent, MosquitoIndividualReading, SensorDeviceReading
+from app.device.models import (
+    MosquitoEvent, MosquitoIndividualReading, SensorDeviceReading,
+    LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING,
+)
 from app.device.schema import ACTIVE_WINDOW_HOURS
 from app.device.chart_schema import (
     MosquitoCountPoint, MosquitoTrendPoint, MosquitoGenderPoint,
@@ -48,6 +51,7 @@ class DeviceChartService:
                 SensorDeviceReading.device_id == device_id,
                 SensorDeviceReading.timestamp >= window_start,
                 SensorDeviceReading.timestamp <= window_end,
+                LIVE_SENSOR_READING,
             )
             .all()
         )
@@ -58,6 +62,7 @@ class DeviceChartService:
                 MosquitoEvent.device_id == device_id,
                 MosquitoEvent.timestamp >= window_start,
                 MosquitoEvent.timestamp <= window_end,
+                LIVE_MOSQUITO_EVENT,
             )
             .all()
         )
@@ -69,6 +74,7 @@ class DeviceChartService:
                 MosquitoEvent.device_id == device_id,
                 MosquitoEvent.timestamp >= window_start,
                 MosquitoEvent.timestamp <= window_end,
+                LIVE_MOSQUITO_EVENT,
             )
             .all()
         )
@@ -221,7 +227,7 @@ class DeviceChartService:
 
         first_seen = (
             self.session.query(func.min(SensorDeviceReading.timestamp))
-            .filter(SensorDeviceReading.device_id == device_id)
+            .filter(SensorDeviceReading.device_id == device_id, LIVE_SENSOR_READING)
             .scalar()
         )
         if first_seen is not None and first_seen.tzinfo:
@@ -236,6 +242,7 @@ class DeviceChartService:
                 SensorDeviceReading.device_id == device_id,
                 SensorDeviceReading.timestamp >= window_start - stale,
                 SensorDeviceReading.timestamp <= window_end,
+                LIVE_SENSOR_READING,
             )
             .order_by(SensorDeviceReading.timestamp, SensorDeviceReading.id)
             .all()
