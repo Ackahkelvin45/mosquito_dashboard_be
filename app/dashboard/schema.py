@@ -18,10 +18,10 @@ class DashboardTotals(BaseModel):
         ..., description="Total mosquitoes detected within the totals window"
     )
     active_devices: int = Field(
-        ..., description="Devices with ≥1 event or reading within the totals window"
+        ..., description="Devices with ≥1 live (non-test) event or reading within the totals window"
     )
     inactive_devices: int = Field(
-        ..., description="Devices with NO activity within the totals window"
+        ..., description="Devices with no live data within the totals window (may still be online via test-mode traffic)"
     )
     total_devices: int = Field(..., description="Total registered devices (after device filters)")
     average_humidity: Optional[float] = Field(
@@ -34,7 +34,7 @@ class DashboardTotals(BaseModel):
         None, description="Average battery voltage from readings within the totals window (V)"
     )
     total_regions_monitored: int = Field(
-        ..., description="Distinct regions of devices active within the totals window"
+        ..., description="Distinct regions of devices with live data within the totals window"
     )
     # Echo back which window was used
     group_by: str = Field(..., description="Rolling window applied to these totals")

@@ -235,7 +235,8 @@ class DashboardService:
             )
             total_mosquito_count = result or 0
 
-        # Active devices = had ≥1 mosquito event OR sensor reading in the window
+        # Active devices = had ≥1 LIVE mosquito event OR sensor reading in the window
+        # (test-mode traffic keeps a device online but doesn't make it "active")
         active_device_ids: set[int] = set()
         if device_ids:
             active_from_events = (
@@ -244,6 +245,7 @@ class DashboardService:
                     MosquitoEvent.device_id.in_(device_ids),
                     MosquitoEvent.timestamp >= window_start,
                     MosquitoEvent.timestamp <= window_end,
+                    LIVE_MOSQUITO_EVENT,
                 )
                 .distinct()
                 .all()
@@ -254,6 +256,7 @@ class DashboardService:
                     SensorDeviceReading.device_id.in_(device_ids),
                     SensorDeviceReading.timestamp >= window_start,
                     SensorDeviceReading.timestamp <= window_end,
+                    LIVE_SENSOR_READING,
                 )
                 .distinct()
                 .all()

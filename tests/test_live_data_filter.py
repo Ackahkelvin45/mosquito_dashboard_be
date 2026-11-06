@@ -80,6 +80,21 @@ class TestDashboard:
         last = res.sensor_status_chart.data[-1]
         assert (last.on_count, last.off_count) == (0, 1)
 
+    def test_test_only_device_is_not_active(self, db_session, make_device, world):
+        # Online (it is sending), but only test-mode data: not "active" for
+        # surveillance, and its region must not count.
+        test_only = make_device(region="R2", community="C2")
+        ts = world["now"] - timedelta(minutes=20)
+        db_session.add(SensorDeviceReading(device_id=test_only.id, timestamp=ts,
+                                           external_temperature=30.0, is_test=True))
+        _event(db_session, test_only, ts, is_test=True, count=5,
+               genus="culex", species="Culex sp.", sex="male")
+        db_session.commit()
+
+        totals = DashboardService(db_session).get_dashboard(totals_group_by="day").totals
+        assert (totals.active_devices, totals.inactive_devices, totals.total_devices) == (1, 1, 2)
+        assert totals.total_regions_monitored == 1  # R1 only
+
 
 class TestDeviceCharts:
     def test_device_charts_exclude_test_rows(self, db_session, world):
