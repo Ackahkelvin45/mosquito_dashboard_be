@@ -192,7 +192,8 @@ def list_clusters(
 def _csv_escape(value):
     # Excel formula-injection guard: species/genus/... are device-supplied
     # strings; a cell starting with = + - @ executes when the CSV is opened.
-    if isinstance(value, str) and value[:1] in "=+-@":
+    # value[:1] of "" is "", and "" in "=+-@" is True — test the first char.
+    if isinstance(value, str) and value and value[0] in "=+-@":
         return "'" + value
     if value is None:
         return ""
