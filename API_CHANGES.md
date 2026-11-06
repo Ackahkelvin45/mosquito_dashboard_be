@@ -973,6 +973,28 @@ the diel-activity profile used for intervention timing.
 
 ---
 
+## 16. Write-scope fixes: REST ingest is admin-only; admin accounts are super-admin-only
+
+- `POST /devices/uuid/{uuid}/sensor-readings` and
+  `POST /devices/uuid/{uuid}/mosquito-events` now require **ADMIN or
+  SUPER_ADMIN** (USER/GUEST → 403), and a cluster admin may post only to devices
+  in the cluster they **manage** — another cluster's device or a public-cluster
+  device → 404 (same rule as `DELETE .../mosquito-events/{id}` and exclude/include).
+  Super admin: any device. Each successful post is audited
+  (`SENSOR_READING_INGESTED` / `MOSQUITO_EVENT_INGESTED`). Devices are
+  unaffected — they ingest over MQTT; no FE code calls these routes.
+- `PATCH /auth/users/{id}`: only a SUPER_ADMIN may edit a user whose role is
+  ADMIN or SUPER_ADMIN → otherwise **403** "Only a super admin can edit an admin
+  account". This includes a cluster admin's own row; self-service stays on
+  `PATCH /auth/me`. `GET /auth/users/{id}` is unchanged (still readable).
+  The FE hides the edit action on admin rows for non-super-admins.
+  Cluster admins also may not change any user's role (403 "Only a super
+  admin can change roles"); re-sending the unchanged role is allowed.
+- `POST .../mosquito-events` without `sex` / `age_group` stores `""` (not
+  reported), as MQTT and CSV import do; before, it returned 500.
+
+---
+
 ## Files changed (summary)
 
 | Area | Files |

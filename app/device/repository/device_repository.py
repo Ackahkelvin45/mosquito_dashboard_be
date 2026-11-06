@@ -283,8 +283,9 @@ class DeviceRepository(BaseRepository[Device]):
             detection_timestamp=reading_payload.detection_timestamp,
             species=reading_payload.species,
             genus=reading_payload.genus,
-            age_group=reading_payload.age_group,
-            sex=reading_payload.sex,
+            # NOT NULL columns: "" = not reported, same as MQTT and CSV import.
+            age_group=reading_payload.age_group or "",
+            sex=reading_payload.sex or "",
             p_mosq=reading_payload.p_mosq,
             binary_decision=reading_payload.binary_decision,
             taxon_probs=reading_payload.taxon_probs,

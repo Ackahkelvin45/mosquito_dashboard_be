@@ -15,7 +15,7 @@ from app.audit.recorder import audit
 from app.core.database import get_db
 from app.core.pagination import Page
 from sqlalchemy.orm import Session
-from utils.protected_route import get_current_user, get_current_user_or_guest
+from utils.protected_route import get_current_user_or_guest
 from app.authentication.schema import UserResponse
 from app.core.security.permissions import (
     require_super_admin, require_admin, visible_cluster_ids, manages_cluster, is_super_admin,
@@ -196,12 +196,16 @@ def get_device_by_uuid(device_uuid: str, session: Session = Depends(get_db),
 
 @router.post("/uuid/{device_uuid}/sensor-readings", status_code=status.HTTP_201_CREATED, response_model=SensorDataResponse)
 def ingest_sensor_reading(device_uuid: str, payload: SensorDataPayload, session: Session = Depends(get_db),
-                          current_user: UserResponse = Depends(get_current_user)):
-    try:
-        allowed = visible_cluster_ids(session, current_user)
-        return DeviceService(session).ingest_sensor_reading(device_uuid, payload, allowed_cluster_ids=allowed)
-    except Exception as e:
-        raise e
+                          current_user: UserResponse = Depends(require_admin)):
+    # Devices ingest over MQTT; this REST path is a manual admin action, so it
+    # follows the DELETE-event rule: devices the caller MANAGES only (404
+    # otherwise), super admin anywhere, and it's audited.
+    reading = DeviceService(session).ingest_sensor_reading(
+        device_uuid, payload, allowed_cluster_ids=managed_cluster_ids(current_user))
+    audit(session, AuditAction.SENSOR_READING_INGESTED, actor_user_id=current_user.id,
+          actor_email=current_user.email, target_type="sensor_reading", target_id=reading.id,
+          detail={"device_uuid": device_uuid})
+    return reading
 
 
 @router.get("/sensor-readings", status_code=status.HTTP_200_OK, response_model=Page[SensorReadingWithDeviceResponse])
@@ -249,12 +253,14 @@ def get_sensor_readings(
 
 @router.post("/uuid/{device_uuid}/mosquito-events", status_code=status.HTTP_201_CREATED, response_model=MosquitoIndividualResponse)
 def ingest_mosquito_event(device_uuid: str, payload: MosquitoEventPayload, session: Session = Depends(get_db),
-                          current_user: UserResponse = Depends(get_current_user)):
-    try:
-        allowed = visible_cluster_ids(session, current_user)
-        return DeviceService(session).ingest_mosquito_event(device_uuid, payload, allowed_cluster_ids=allowed)
-    except Exception as e:
-        raise e
+                          current_user: UserResponse = Depends(require_admin)):
+    # Same rule as sensor-readings above (detections also bump total_mosquito_count).
+    reading = DeviceService(session).ingest_mosquito_event(
+        device_uuid, payload, allowed_cluster_ids=managed_cluster_ids(current_user))
+    audit(session, AuditAction.MOSQUITO_EVENT_INGESTED, actor_user_id=current_user.id,
+          actor_email=current_user.email, target_type="mosquito_event", target_id=reading.batch_id,
+          detail={"device_uuid": device_uuid})
+    return reading
 
 
 @router.get("/uuid/{device_uuid}/mosquito-events", status_code=status.HTTP_200_OK, response_model=Page[MosquitoEventResponse])

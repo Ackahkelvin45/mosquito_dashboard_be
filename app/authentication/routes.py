@@ -273,9 +273,15 @@ def update_user(user_id: int, update_data: UserUpdate, session: Session = Depend
             # Cluster admins manage only their own cluster's users…
             if not manages_cluster(current_user, existing.cluster_id):
                 raise HTTPException(status_code=404, detail="User not found")
-            # …may not promote anyone to super admin…
-            if update_data.role == UserRole.SUPER_ADMIN:
-                raise HTTPException(status_code=403, detail="Only a super admin can grant the super admin role")
+            # …may not edit admin accounts — peers, super admins, or their own
+            # (changing a peer's email + forgot-password = account takeover;
+            # self-service is PATCH /auth/me)…
+            if existing.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+                raise HTTPException(status_code=403, detail="Only a super admin can edit an admin account")
+            # …may not change roles at all (promoting a USER to ADMIN would
+            # create an account no cluster admin can demote again)…
+            if "role" in update_data.model_fields_set and update_data.role != existing.role:
+                raise HTTPException(status_code=403, detail="Only a super admin can change roles")
             # …and may not move users to another cluster.
             if "cluster_id" in update_data.model_fields_set and update_data.cluster_id != current_user.cluster_id:
                 raise HTTPException(status_code=403, detail="Only a super admin can move users between clusters")
