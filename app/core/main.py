@@ -17,6 +17,7 @@ from app.api_access.public_routes import router as public_api_router
 from app.monitoring.routes import router as monitoring_router
 from app.monitoring.data_quality import router as data_quality_router
 from app.audit.routes import router as audit_router
+from app.trap_counts.routes import router as trap_counts_router
 from utils.protected_route import get_current_user
 from app.authentication.schema import UserResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,6 +123,7 @@ app.include_router(monitoring_router, tags=["monitoring"], prefix="/monitoring")
 # Same prefix, own guard: admins (own cluster) + super admins — see data_quality.py.
 app.include_router(data_quality_router, tags=["monitoring"], prefix="/monitoring")
 app.include_router(audit_router, tags=["audit"], prefix="/audit-logs")
+app.include_router(trap_counts_router, tags=["trap-counts"], prefix="/trap-counts")
 
 
 # ---------------------------
