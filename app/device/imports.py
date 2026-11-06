@@ -5,7 +5,8 @@ Format = the public API export (GET /api/v1/export?format=csv) for the same
 dataset: same column names, raw values, ISO-8601 UTC timestamps. The
 informational columns (id, device_name, region, community, cluster_id) may be
 present and are ignored — the device is identified by device_uuid alone, and
-ids are assigned fresh.
+ids are assigned fresh. battery_pct / p_mosq were added to the export later and
+are optional, so older exports still import (absent or empty → NULL).
 
 The body is the raw CSV (Content-Type: text/csv), not multipart: FastAPI's
 multipart support needs python-multipart, which this project doesn't ship.
@@ -57,6 +58,11 @@ MOSQUITO = "mosquito-events"
 
 # Export columns that describe the device or the row's old id, not the reading.
 IGNORED_COLUMNS = {"id", "device_name", "region", "community", "cluster_id"}
+# Export columns that older exports lack: accepted when present, NULL when not.
+# In the duplicate check a blank file cell matches any stored value (so an older
+# file re-imported over rows that carry these values is still a duplicate); a
+# non-blank one must equal the stored value, else the row is a conflict.
+OPTIONAL_COLUMNS = {"battery_pct", "p_mosq"}
 SENSOR_FLOATS = [
     "external_temperature", "internal_temperature", "external_humidity", "internal_humidity",
     "external_pressure", "internal_pressure", "external_light", "battery_voltage",
@@ -65,7 +71,8 @@ SENSOR_FLOATS = [
 MOSQUITO_STRINGS = {"species": 250, "genus": 250, "age_group": 50, "sex": 50}
 
 EXPORT_COLUMNS = {SENSOR: list(SENSOR_READING_COLUMNS), MOSQUITO: list(MOSQUITO_EVENT_COLUMNS)}
-REQUIRED_COLUMNS = {k: [c for c in v if c not in IGNORED_COLUMNS] for k, v in EXPORT_COLUMNS.items()}
+REQUIRED_COLUMNS = {k: [c for c in v if c not in IGNORED_COLUMNS | OPTIONAL_COLUMNS]
+                    for k, v in EXPORT_COLUMNS.items()}
 
 
 class RowError(Exception):
@@ -117,6 +124,18 @@ def parse_float(value: str, column: str) -> Optional[float]:
     return number
 
 
+def parse_bounded(value: str, column: str, low: float, high: float, whole: bool = False):
+    """Optional number in [low, high]; out of range is rejected, never clamped."""
+    number = parse_float(value, column)
+    if number is None:
+        return None
+    if whole and not number.is_integer():
+        raise RowError(f"{column}: '{value.strip()}' must be a whole number")
+    if not low <= number <= high:
+        raise RowError(f"{column}: '{value.strip()}' must be between {low:g} and {high:g}")
+    return int(number) if whole else number
+
+
 def parse_bool(value: str, column: str) -> bool:
     lowered = value.strip().lower()
     if lowered in ("true", "on", "1"):
@@ -131,6 +150,7 @@ def parse_sensor_row(cells: dict) -> dict:
     for column in SENSOR_FLOATS:
         row[column] = parse_float(cells[column], column)
     row["trap_status"] = parse_bool(cells["trap_status"], "trap_status")
+    row["battery_pct"] = parse_bounded(cells.get("battery_pct", ""), "battery_pct", 0, 100, whole=True)
     return row
 
 
@@ -143,11 +163,12 @@ def parse_mosquito_row(cells: dict) -> dict:
     for column, max_len in MOSQUITO_STRINGS.items():
         if len(cells[column]) > max_len:
             raise RowError(f"{column}: longer than {max_len} characters")
+    p_mosq = parse_bounded(cells.get("p_mosq", ""), "p_mosq", 0, 1)
     if cells["detection_timestamp"] == "":
         # The export's outer join writes an event without a detection as
         # all-empty detection columns; anything else is a broken row.
-        if any(cells[c] for c in MOSQUITO_STRINGS):
-            raise RowError("detection_timestamp is required when species/genus/age_group/sex are given")
+        if any(cells[c] for c in MOSQUITO_STRINGS) or p_mosq is not None:
+            raise RowError("detection_timestamp is required when species/genus/age_group/sex/p_mosq are given")
         row["detection"] = None
     else:
         row["detection"] = {
@@ -158,19 +179,23 @@ def parse_mosquito_row(cells: dict) -> dict:
             "genus": cells["genus"] or None,
             "age_group": cells["age_group"],
             "sex": cells["sex"],
+            "p_mosq": p_mosq,
         }
     return row
 
 
 # ── Duplicate keys (compared in export form: NULL and "" both export as "") ──
+# The LAST element of every key is the optional column (battery_pct / p_mosq);
+# a file-side None there is a wildcard — see _take_duplicate.
 
 def _sensor_key(device_id: int, r: dict) -> tuple:
-    return (device_id, r["timestamp"], *(r[c] for c in SENSOR_FLOATS), bool(r["trap_status"]))
+    return (device_id, r["timestamp"], *(r[c] for c in SENSOR_FLOATS), bool(r["trap_status"]),
+            r["battery_pct"])
 
 
-def _mosquito_key(device_id, timestamp, count, detection_ts, species, genus, age_group, sex) -> tuple:
+def _mosquito_key(device_id, timestamp, count, detection_ts, species, genus, age_group, sex, p_mosq) -> tuple:
     return (device_id, timestamp, count, detection_ts,
-            species or "", genus or "", age_group or "", sex or "")
+            species or "", genus or "", age_group or "", sex or "", p_mosq)
 
 
 def _existing_keys(session: Session, kind: str, pairs: list[tuple[int, datetime]]) -> Counter:
@@ -185,7 +210,7 @@ def _existing_keys(session: Session, kind: str, pairs: list[tuple[int, datetime]
                         tuple_(SensorDeviceReading.device_id, SensorDeviceReading.timestamp).in_(chunk))
                 .all()
             )
-            keys.update(_sensor_key(r.device_id, {c: getattr(r, c) for c in ("timestamp", *SENSOR_FLOATS, "trap_status")})
+            keys.update(_sensor_key(r.device_id, {c: getattr(r, c) for c in ("timestamp", *SENSOR_FLOATS, "trap_status", "battery_pct")})
                         for r in rows)
         else:
             rows = (
@@ -193,7 +218,7 @@ def _existing_keys(session: Session, kind: str, pairs: list[tuple[int, datetime]
                     MosquitoEvent.device_id, MosquitoEvent.timestamp, MosquitoEvent.count,
                     MosquitoIndividualReading.detection_timestamp, MosquitoIndividualReading.species,
                     MosquitoIndividualReading.genus, MosquitoIndividualReading.age_group,
-                    MosquitoIndividualReading.sex,
+                    MosquitoIndividualReading.sex, MosquitoIndividualReading.p_mosq,
                 )
                 .outerjoin(MosquitoIndividualReading, MosquitoIndividualReading.batch_id == MosquitoEvent.id)
                 .filter(LIVE_MOSQUITO_EVENT,
@@ -209,7 +234,28 @@ def _row_key(kind: str, device_id: int, r: dict) -> tuple:
         return _sensor_key(device_id, r)
     d = r["detection"] or {}
     return _mosquito_key(device_id, r["timestamp"], r["count"], d.get("detection_timestamp"),
-                         d.get("species"), d.get("genus"), d.get("age_group"), d.get("sex"))
+                         d.get("species"), d.get("genus"), d.get("age_group"), d.get("sex"),
+                         d.get("p_mosq"))
+
+
+def _take_duplicate(stored: dict, key: tuple) -> bool:
+    """Consume one stored row matching the file row's key (multiset: one stored
+    row absorbs one file row). `stored` maps key[:-1] → Counter of stored
+    optional values. A blank (None) file value matches any stored value.
+    ponytail: greedy — a blank row may take the stored row a later exact row
+    wanted (that row then counts as a conflict); exact matches go first."""
+    values = stored.get(key[:-1])
+    if not values:
+        return False
+    value = key[-1]
+    if values[value] <= 0:
+        if value is not None:
+            return False
+        value = next((v for v, n in values.items() if n > 0), None)
+        if value is None and values[None] <= 0:
+            return False
+    values[value] -= 1
+    return True
 
 
 # ── Validation ───────────────────────────────────────────────────────────────
@@ -290,11 +336,13 @@ def validate(session: Session, user: UserResponse, kind: str, body: bytes) -> tu
 
     existing = _existing_keys(session, kind, sorted({(d.id, r["timestamp"]) for _, d, r in parsed}))
     occupied = {key[:2] for key in existing}  # (device_id, timestamp) already stored
+    stored: dict[tuple, Counter] = {}
+    for key, n in existing.items():
+        stored.setdefault(key[:-1], Counter())[key[-1]] += n
     to_insert, skipped, conflicts = [], [], []
     for row_number, device, r in parsed:
         key = _row_key(kind, device.id, r)
-        if existing[key] > 0:  # multiset: one stored row absorbs one file row
-            existing[key] -= 1
+        if _take_duplicate(stored, key):
             skipped.append(row_number)
         else:
             to_insert.append((device, r))
@@ -327,7 +375,7 @@ def _write(session: Session, user: UserResponse, kind: str, filename: Optional[s
         if kind == SENSOR:
             session.add(SensorDeviceReading(
                 device_id=device.id, import_batch_id=batch.id, is_test=False,
-                timestamp=r["timestamp"], trap_status=r["trap_status"],
+                timestamp=r["timestamp"], trap_status=r["trap_status"], battery_pct=r["battery_pct"],
                 **{c: r[c] for c in SENSOR_FLOATS},
             ))
         else:

@@ -23,8 +23,11 @@ from app.notification.models import Notification
 from utils.protected_route import get_current_user, get_current_user_or_guest
 
 T0 = datetime(2026, 3, 1, 12, 0, 0, 123456)
-SENSOR_HEADER = ",".join(imports.EXPORT_COLUMNS[imports.SENSOR])
-MOSQUITO_HEADER = ",".join(imports.EXPORT_COLUMNS[imports.MOSQUITO])
+# Helpers write the pre-battery_pct/p_mosq header, i.e. an older export file.
+SENSOR_HEADER = ",".join(c for c in imports.EXPORT_COLUMNS[imports.SENSOR] if c not in imports.OPTIONAL_COLUMNS)
+MOSQUITO_HEADER = ",".join(c for c in imports.EXPORT_COLUMNS[imports.MOSQUITO] if c not in imports.OPTIONAL_COLUMNS)
+FULL_SENSOR_HEADER = ",".join(imports.EXPORT_COLUMNS[imports.SENSOR])
+FULL_MOSQUITO_HEADER = ",".join(imports.EXPORT_COLUMNS[imports.MOSQUITO])
 
 
 @pytest.fixture
@@ -122,7 +125,8 @@ def test_round_trip_export_import_is_identical(client, as_user, world, db_sessio
     d1, d2 = world["d1"], world["d2"]
     db_session.add_all([
         SensorDeviceReading(device_id=d1.id, timestamp=T0, external_temperature=-3.25,
-                            internal_humidity=55.123456789, battery_voltage=12.6, trap_status=True),
+                            internal_humidity=55.123456789, battery_voltage=12.6, battery_pct=87,
+                            trap_status=True),
         SensorDeviceReading(device_id=d2.id, timestamp=T0 + timedelta(minutes=5), trap_status=False),
     ])
     e1 = MosquitoEvent(device_id=d1.id, timestamp=T0, count=1)
@@ -130,7 +134,7 @@ def test_round_trip_export_import_is_identical(client, as_user, world, db_sessio
     db_session.add_all([e1, e2])
     db_session.flush()
     db_session.add(MosquitoIndividualReading(batch_id=e1.id, detection_timestamp=T0, species="=SUM(A1)",
-                                             genus="aedes", age_group="", sex="female"))
+                                             genus="aedes", age_group="", sex="female", p_mosq=0.873))
     d1.total_mosquito_count = 1
     db_session.commit()
 
@@ -148,6 +152,9 @@ def test_round_trip_export_import_is_identical(client, as_user, world, db_sessio
     db_session.refresh(d2)
     assert (d1.total_mosquito_count, d2.total_mosquito_count) == (1, 0)
     assert db_session.query(MosquitoIndividualReading).one().species == "=SUM(A1)"
+    assert db_session.query(MosquitoIndividualReading).one().p_mosq == 0.873
+    assert sorted(r.battery_pct is None for r in db_session.query(SensorDeviceReading)) == [False, True]
+    assert db_session.query(SensorDeviceReading).filter_by(device_id=d1.id).one().battery_pct == 87
     # Provenance + real data.
     assert all(r.import_batch_id and not r.is_test for r in db_session.query(SensorDeviceReading))
     assert all(r.import_batch_id and not r.is_test for r in db_session.query(MosquitoEvent))
@@ -190,6 +197,60 @@ def test_empty_cells_become_null_not_zero(client, as_user, world, db_session):
     assert post(client, "sensor-readings", sensor_csv((world["d1"], "2026-03-01T12:00:00Z", "", "False"))).status_code == 200
     r = db_session.query(SensorDeviceReading).one()
     assert r.external_temperature is None and r.battery_voltage is None and r.internal_humidity is None
+
+
+def test_old_file_without_optional_columns_imports_as_null(client, as_user, world, db_session):
+    as_user(world["admin"])
+    assert "battery_pct" not in SENSOR_HEADER and "p_mosq" not in MOSQUITO_HEADER
+    assert post(client, "sensor-readings", sensor_csv((world["d1"], "2026-03-01T12:00:00Z", "1", "True"))).status_code == 200
+    assert post(client, "mosquito-events", mosquito_csv((world["d1"], "2026-03-01T12:00:00Z", "Aedes sp."))).status_code == 200
+    assert db_session.query(SensorDeviceReading).one().battery_pct is None
+    assert db_session.query(MosquitoIndividualReading).one().p_mosq is None
+
+
+def test_optional_columns_blank_is_null(client, as_user, world, db_session):
+    as_user(world["admin"])
+    d = world["d1"].device_uuid
+    sensor = FULL_SENSOR_HEADER + f"\n,2026-03-01T12:00:00Z,{d},,,,,,,,,,,,,True,\n"
+    mosquito = FULL_MOSQUITO_HEADER + f"\n,2026-03-01T12:00:00Z,{d},,,,,1,2026-03-01T12:00:00Z,,aedes,,female,\n"
+    assert post(client, "sensor-readings", sensor).status_code == 200
+    assert post(client, "mosquito-events", mosquito).status_code == 200
+    assert db_session.query(SensorDeviceReading).one().battery_pct is None
+    assert db_session.query(MosquitoIndividualReading).one().p_mosq is None
+
+
+@pytest.mark.parametrize("battery, ok", [("0", True), ("100", True), ("-1", False), ("101", False), ("50.5", False), ("x", False)])
+def test_battery_pct_range(client, as_user, world, db_session, battery, ok):
+    as_user(world["admin"])
+    text = FULL_SENSOR_HEADER + f"\n,2026-03-01T12:00:00Z,{world['d1'].device_uuid},,,,,,,,,,,,,True,{battery}\n"
+    res = post(client, "sensor-readings", text)
+    assert (res.status_code == 200) is ok
+    if ok:
+        assert db_session.query(SensorDeviceReading).one().battery_pct == int(battery)
+    else:
+        assert "battery_pct" in res.json()["detail"]["errors"][0]["error"]
+        assert db_session.query(SensorDeviceReading).count() == 0
+
+
+@pytest.mark.parametrize("p, ok", [("0", True), ("1", True), ("0.5", True), ("-0.01", False), ("1.01", False), ("87", False)])
+def test_p_mosq_range(client, as_user, world, db_session, p, ok):
+    as_user(world["admin"])
+    d = world["d1"].device_uuid
+    text = FULL_MOSQUITO_HEADER + f"\n,2026-03-01T12:00:00Z,{d},,,,,1,2026-03-01T12:00:00Z,,aedes,,female,{p}\n"
+    res = post(client, "mosquito-events", text)
+    assert (res.status_code == 200) is ok
+    if ok:
+        assert db_session.query(MosquitoIndividualReading).one().p_mosq == float(p)
+    else:
+        assert "p_mosq" in res.json()["detail"]["errors"][0]["error"]
+        assert db_session.query(MosquitoEvent).count() == 0
+
+
+def test_p_mosq_without_detection_timestamp_rejected(client, as_user, world):
+    as_user(world["admin"])
+    text = FULL_MOSQUITO_HEADER + f"\n,2026-03-01T12:00:00Z,{world['d1'].device_uuid},,,,,1,,,,,,0.9\n"
+    res = post(client, "mosquito-events", text)
+    assert res.status_code == 422 and "detection_timestamp" in res.json()["detail"]["errors"][0]["error"]
 
 
 def test_timezone_offset_converted_to_utc(client, as_user, world, db_session):
@@ -442,6 +503,57 @@ def test_same_time_different_values_reported_as_conflict(client, as_user, world,
         (world["d1"], "2026-03-01T13:00:00Z", "2", "True"),
     ), dry_run=True).json()
     assert (body["rows_to_import"], body["conflict_count"], body["conflict_rows"]) == (2, 1, [2])
+
+
+def _full_sensor(device, battery):
+    return FULL_SENSOR_HEADER + f"\n,2026-03-01T12:00:00Z,{device.device_uuid},,,,,,,,,,,,,True,{battery}\n"
+
+
+def _full_mosquito(device, p):
+    ts = "2026-03-01T12:00:00Z"
+    return FULL_MOSQUITO_HEADER + f"\n,{ts},{device.device_uuid},,,,,1,{ts},,aedes,,female,{p}\n"
+
+
+@pytest.mark.parametrize("stored, again, skipped", [
+    ("87", "87", True),    # same value: duplicate
+    ("87", "", True),      # blank over a stored value: not compared, duplicate
+    ("87", "50", False),   # differing value: conflict, imported
+    ("", "50", False),     # value over a stored NULL: differs, conflict
+])
+def test_reimport_battery_pct_duplicate_or_conflict(client, as_user, world, db_session, stored, again, skipped):
+    as_user(world["admin"])
+    assert post(client, "sensor-readings", _full_sensor(world["d1"], stored)).status_code == 200
+    body = post(client, "sensor-readings", _full_sensor(world["d1"], again)).json()
+    expected = (1, 0, 0) if skipped else (0, 1, 1)
+    assert (body["rows_skipped"], body["rows_to_import"], body["conflict_count"]) == expected
+    assert db_session.query(SensorDeviceReading).count() == (1 if skipped else 2)
+
+
+@pytest.mark.parametrize("stored, again, skipped", [
+    ("0.9", "0.9", True), ("0.9", "", True), ("0.9", "0.5", False), ("", "0.5", False),
+])
+def test_reimport_p_mosq_duplicate_or_conflict(client, as_user, world, db_session, stored, again, skipped):
+    as_user(world["admin"])
+    assert post(client, "mosquito-events", _full_mosquito(world["d1"], stored)).status_code == 200
+    body = post(client, "mosquito-events", _full_mosquito(world["d1"], again)).json()
+    expected = (1, 0, 0) if skipped else (0, 1, 1)
+    assert (body["rows_skipped"], body["rows_to_import"], body["conflict_count"]) == expected
+    assert db_session.query(MosquitoIndividualReading).count() == (1 if skipped else 2)
+
+
+def test_old_file_reimport_over_stored_values_is_duplicate(client, as_user, world, db_session):
+    as_user(world["admin"])
+    post(client, "mosquito-events", _full_mosquito(world["d1"], "0.9"))
+    old = MOSQUITO_HEADER + f"\n,2026-03-01T12:00:00Z,{world['d1'].device_uuid},,,,,1,2026-03-01T12:00:00Z,,aedes,,female\n"
+    body = post(client, "mosquito-events", old).json()
+    assert (body["rows_skipped"], body["conflict_count"]) == (1, 0)
+
+
+def test_battery_pct_whole_float_stored_as_int(client, as_user, world, db_session):
+    as_user(world["admin"])
+    assert post(client, "sensor-readings", _full_sensor(world["d1"], "87.0")).status_code == 200
+    stored = db_session.query(SensorDeviceReading).one().battery_pct
+    assert stored == 87 and isinstance(stored, int)
 
 
 def test_imported_rows_not_latest_reading(client, as_user, world, db_session):

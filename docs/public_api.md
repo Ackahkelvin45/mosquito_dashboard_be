@@ -31,8 +31,8 @@ owner, or changing their cluster takes effect immediately.
 
 | Endpoint | Data | Pagination |
 |---|---|---|
-| `GET /api/v1/sensor-readings` | Environmental sensor readings (with device context) | Cursor |
-| `GET /api/v1/mosquito-events` | Mosquito detections incl. species/genus/sex/age | Cursor |
+| `GET /api/v1/sensor-readings` | Environmental sensor readings incl. `battery_pct` (0-100) (with device context) | Cursor |
+| `GET /api/v1/mosquito-events` | Mosquito detections incl. species/genus/sex/age and model confidence `p_mosq` (raw 0-1) | Cursor |
 | `GET /api/v1/devices` | Device metadata & location | Page |
 | `GET /api/v1/clusters` | Clusters visible to your key | Page |
 | `GET /api/v1/export` | Full filtered dataset as CSV / JSONL stream | — (streams) |
@@ -130,6 +130,9 @@ while True:
 - CSV columns are in a fixed, documented order (the `fields=` order of the
   dataset). Empty cells are NULLs. Text cells beginning with `= + - @` are
   prefixed with `'` to disarm spreadsheet formula injection.
+- `battery_pct` (sensor-readings) and `p_mosq` (mosquito-events) are the last
+  columns; they were appended later, so files exported before them lack them.
+  The dashboard's CSV import accepts files with or without these two columns.
 
 ## Rate limits
 

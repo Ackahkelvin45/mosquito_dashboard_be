@@ -389,6 +389,42 @@ class TestExport:
         species = rows[1][rows[0].index("species")]
         assert species.startswith("'=")
 
+    def test_battery_pct_and_p_mosq_in_list_and_export(self, client, world, make_api_key, make_reading,
+                                                       make_event, db_session):
+        make_reading(world["d1"], battery_pct=87)
+        event = make_event(world["d1"])
+        db_session.query(MosquitoIndividualReading).filter_by(batch_id=event.id).update({"p_mosq": 0.873})
+        db_session.commit()
+        raw, _ = make_api_key(world["user"])
+        assert client.get("/api/v1/sensor-readings", headers=auth(raw)).json()["items"][0]["battery_pct"] == 87
+        assert client.get("/api/v1/mosquito-events", headers=auth(raw)).json()["items"][0]["p_mosq"] == 0.873
+        for dataset, column, value in (("sensor-readings", "battery_pct", "87"), ("mosquito-events", "p_mosq", "0.873")):
+            rows = list(csv.reader(io.StringIO(
+                client.get(f"/api/v1/export?dataset={dataset}&format=csv", headers=auth(raw)).text)))
+            assert rows[1][rows[0].index(column)] == value
+
+    def test_non_finite_float_is_null_not_500(self, client, world, make_api_key, make_event, monkeypatch):
+        # SQLite stores NaN as NULL, so feed a NaN through the column itself.
+        from sqlalchemy import Float, TypeDecorator, literal_column
+        from app.api_access.queries import MOSQUITO_EVENT_COLUMNS
+
+        class NanFloat(TypeDecorator):
+            impl, cache_ok = Float, True
+
+            def process_result_value(self, value, dialect):
+                return float(value)
+
+        monkeypatch.setitem(MOSQUITO_EVENT_COLUMNS, "p_mosq", literal_column("'nan'", type_=NanFloat))
+        make_event(world["d1"])
+        raw, _ = make_api_key(world["user"])
+        res = client.get("/api/v1/mosquito-events", headers=auth(raw))
+        assert res.status_code == 200 and res.json()["items"][0]["p_mosq"] is None
+        res = client.get("/api/v1/export?dataset=mosquito-events&format=csv", headers=auth(raw))
+        rows = list(csv.reader(io.StringIO(res.text)))
+        assert res.status_code == 200 and rows[1][rows[0].index("p_mosq")] == ""
+        res = client.get("/api/v1/export?dataset=mosquito-events&format=jsonl", headers=auth(raw))
+        assert json.loads(res.text.splitlines()[0])["p_mosq"] is None
+
     def test_export_respects_filters(self, client, world, make_api_key, make_reading):
         make_reading(world["d1"], timestamp=datetime(2026, 1, 1))
         make_reading(world["d1"], timestamp=datetime(2026, 6, 1))

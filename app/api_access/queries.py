@@ -7,6 +7,7 @@ Everything here is column-tuple selects (no ORM instantiation), SQL-side
 keyset pagination, and streaming-friendly statements.
 """
 import base64
+import math
 from datetime import datetime
 from typing import Optional, Sequence
 
@@ -47,6 +48,9 @@ SENSOR_READING_COLUMNS = {
     "external_light": SensorDeviceReading.external_light,
     "battery_voltage": SensorDeviceReading.battery_voltage,
     "trap_status": SensorDeviceReading.trap_status,
+    # Appended (not next to battery_voltage) so positional CSV readers of the
+    # older column order keep working.
+    "battery_pct": SensorDeviceReading.battery_pct,
 }
 
 MOSQUITO_EVENT_COLUMNS = {
@@ -63,6 +67,7 @@ MOSQUITO_EVENT_COLUMNS = {
     "genus": MosquitoIndividualReading.genus,
     "age_group": MosquitoIndividualReading.age_group,
     "sex": MosquitoIndividualReading.sex,
+    "p_mosq": MosquitoIndividualReading.p_mosq,  # model confidence 0-1, raw
 }
 
 DEVICE_COLUMNS = {
@@ -278,6 +283,10 @@ def serialize_value(value):
     # DB timestamps are naive UTC; make that explicit for external consumers.
     if isinstance(value, datetime):
         return value.isoformat() + "Z"
+    # NaN/inf (ingest's json.loads accepts NaN) is "no number": null in JSON,
+    # blank in CSV — and never a 500 from the strict JSON encoder.
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     return value
 
 
