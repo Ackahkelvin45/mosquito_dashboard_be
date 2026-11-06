@@ -44,3 +44,45 @@ class MqttErrorResponse(BaseModel):
     detail: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DataQualityDevice(BaseModel):
+    """Per-device data-quality figures over the report window (live rows only).
+
+    Counts are null when there is nothing to count them over — a device with
+    no readings has no null-percentage, not 0%."""
+    device_id: int
+    device_uuid: Optional[str] = None
+    name: str
+    cluster_id: Optional[int] = None
+    region: Optional[str] = None
+
+    total_readings: int = Field(..., description="Live sensor readings in the window")
+    test_readings: int = Field(..., description="Test-mode readings in the window (not counted anywhere else)")
+    last_reading_at: Optional[datetime] = Field(None, description="Newest live reading in the window (device clock)")
+    null_pct: dict[str, Optional[float]] = Field(
+        ..., description="Per sensor field: % of live readings where it was null ('no valid reading'). Null when there are no readings.")
+    temperature_out_of_range: int = Field(..., description="Readings whose temperature (external, else internal) is outside the alert range")
+    humidity_out_of_range: int = Field(..., description="Readings whose humidity (external, else internal) is outside the alert range")
+    battery_pct_out_of_range: int = Field(..., description="Readings with battery_pct outside 0-100")
+    longest_silence_min: Optional[float] = Field(
+        None, description="Longest time between two consecutive live readings in the window. Null with fewer than 2 readings.")
+    silences_over_threshold: Optional[int] = Field(
+        None, description="Silences longer than the offline threshold between consecutive live readings. Null with fewer than 2 readings.")
+
+    detections: int = Field(..., description="Live mosquito events in the window")
+    detections_missing_p_mosq: int
+    detections_missing_genus: int
+    detections_p_mosq_out_of_range: int = Field(..., description="p_mosq outside 0-1")
+
+
+class DataQualityReport(BaseModel):
+    days: int
+    window_start: datetime
+    window_end: datetime
+    offline_threshold_min: int = Field(..., description="Silence threshold used for silences_over_threshold (same as the offline alert)")
+    temp_min: float
+    temp_max: float
+    humidity_min: float
+    humidity_max: float
+    devices: list[DataQualityDevice] = []
