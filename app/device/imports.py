@@ -6,7 +6,9 @@ dataset: same column names, raw values, ISO-8601 UTC timestamps. The
 informational columns (id, device_name, region, community, cluster_id) may be
 present and are ignored — the device is identified by device_uuid alone, and
 ids are assigned fresh. So are excluded / exclusion_reason: an exclusion is
-never imported (there is no excluder), the imported row is included. battery_pct / p_mosq were added to the export later and
+never imported (there is no excluder), the imported row is included. Timestamps
+are stored exactly as in the file, future ones included (a device clock
+running ahead; ingest keeps those too). battery_pct / p_mosq were added to the export later and
 are optional, so older exports still import (absent or empty → NULL).
 
 The body is the raw CSV (Content-Type: text/csv), not multipart: FastAPI's
@@ -22,7 +24,7 @@ import csv
 import io
 import math
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -46,9 +48,6 @@ router = APIRouter()
 MAX_FILE_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 50_000
 MAX_REPORTED = 500  # errors / skipped / conflict row numbers listed in a report
-# Clock skew allowed between the importer's data and the server before a
-# timestamp counts as "in the future".
-FUTURE_TOLERANCE = timedelta(minutes=5)
 # pg_advisory_xact_lock key serialising import writes (any constant unique
 # to this feature).
 IMPORT_LOCK_KEY = 0x1D_A7A1
@@ -99,7 +98,9 @@ def _cell(value: str) -> str:
 
 def parse_timestamp(value: str, column: str) -> datetime:
     """ISO 8601 with a time AND an explicit zone, as the export writes it
-    ("2026-05-01T12:00:00.123456Z"). Offsets are converted to naive UTC."""
+    ("2026-05-01T12:00:00.123456Z"). Offsets are converted to naive UTC.
+    A future time is kept as-is, like ingest does: it is the device's clock
+    (running ahead), and an export of such rows must re-import."""
     value = value.strip()
     example = "e.g. 2026-05-01T12:00:00Z"
     try:
@@ -110,10 +111,7 @@ def parse_timestamp(value: str, column: str) -> datetime:
         raise RowError(f"{column}: '{value}' has no time of day ({example})")
     if ts.tzinfo is None:
         raise RowError(f"{column}: '{value}' has no timezone — add Z for UTC or an offset like +02:00 ({example})")
-    ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
-    if ts > datetime.utcnow() + FUTURE_TOLERANCE:
-        raise RowError(f"{column}: '{value}' is in the future")
-    return ts
+    return ts.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def parse_float(value: str, column: str) -> Optional[float]:

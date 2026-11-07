@@ -80,6 +80,10 @@ class DataQualityDevice(BaseModel):
     max_delay_s: Optional[float] = Field(None, description="Largest delay, seconds. Null when nothing was measured.")
     delayed_over_threshold: int = Field(
         0, description="Measured readings that arrived more than the offline threshold after their timestamp")
+    clock_ahead_count: int = Field(
+        0, description="Live readings received in the window (by server receive time, received_at) whose timestamp is "
+                       "more than 5 minutes after that receive time, i.e. the device clock is ahead. Readings without "
+                       "received_at (stored before the column existed, CSV-imported, HTTP-posted, or sent without a device timestamp) are not counted.")
 
     detections: int = Field(..., description="Live mosquito events in the window")
     detections_missing_p_mosq: int

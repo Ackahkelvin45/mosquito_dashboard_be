@@ -37,6 +37,10 @@ from app.notification.alert_settings import get_thresholds
 
 router = APIRouter()
 
+# A reading stamped more than this after its server receive time counts as
+# clock_ahead (device clock running fast; ingest and import keep its time).
+CLOCK_AHEAD_TOLERANCE = timedelta(minutes=5)
+
 # Sensor columns reported in null_pct, keyed by the name the API returns.
 NULL_FIELDS = {
     "external_temperature": SensorDeviceReading.external_temperature,
@@ -171,6 +175,24 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
         .group_by(SensorDeviceReading.device_id)
         .all()
     }
+    # 3c. Clock ahead, windowed by RECEIVE time: a device stamping far in
+    # the future (even years) is outside the timestamp window and would never
+    # be counted otherwise.
+    clock_ahead = dict(
+        session.query(SensorDeviceReading.device_id, func.count(SensorDeviceReading.id))
+        .filter(
+            SensorDeviceReading.device_id.in_(ids),
+            SensorDeviceReading.received_at >= window_start,
+            SensorDeviceReading.received_at <= window_end,
+            # Implied by clock-ahead (timestamp > received_at + 5 min >= window_start);
+            # lets the (device_id, timestamp) index narrow the scan.
+            SensorDeviceReading.timestamp > window_start,
+            LIVE_SENSOR_READING,
+            delay < -CLOCK_AHEAD_TOLERANCE.total_seconds(),
+        )
+        .group_by(SensorDeviceReading.device_id)
+        .all()
+    )
 
     # 4. Detections. Outer join: an event without its reading row counts as
     # missing p_mosq and genus.
@@ -248,6 +270,7 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
             min_delay_s=delay_s(min_d),
             max_delay_s=delay_s(max_d),
             delayed_over_threshold=delayed,
+            clock_ahead_count=clock_ahead.get(d.id, 0),
             detections=det_total,
             detections_missing_p_mosq=det_no_p,
             detections_missing_genus=det_no_genus,

@@ -215,3 +215,19 @@ class TestStuckSensor:
         rows = db_session.query(Notification).filter(
             Notification.notification_type == NotificationType.SENSOR_MALFUNCTION).all()
         assert len(rows) == 1
+
+    def test_trap_status_filter_ignores_imported_future_row(self, db_session, world, make_user):
+        # An imported row dated years ahead must not pin the On/Off filter
+        # (Device.latest_reading skips imported rows too).
+        from app.device.models import DataImport
+        batch = DataImport(kind="sensor-readings", rows_total=1, rows_imported=1, rows_skipped=0,
+                           imported_by_user_id=make_user().id)
+        db_session.add(batch)
+        db_session.flush()
+        db_session.add(SensorDeviceReading(
+            device_id=world["device"].id, timestamp=world["now"] + timedelta(days=3650),
+            trap_status=True, is_test=False, import_batch_id=batch.id))
+        db_session.commit()
+        repo = DeviceRepository(db_session)
+        assert repo.filter_devices(trap_status=True) == []
+        assert [d.id for d in repo.filter_devices(trap_status=False)] == [world["device"].id]

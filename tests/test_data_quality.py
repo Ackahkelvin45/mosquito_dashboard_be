@@ -208,7 +208,8 @@ def test_silence_threshold_boundary(app, client, db_session, make_cluster, make_
 def test_delivery_delay(app, client, db_session, make_cluster, make_device, make_user):
     """Delay = received_at - timestamp over live readings that have
     received_at. NULL rows are not measured (not 0), negative delays (device
-    clock ahead) are kept, the threshold is strict >, test rows excluded."""
+    clock ahead) are kept, the threshold is strict >, test rows excluded.
+    clock_ahead_count = delay below -5 min (2 min ahead is tolerated)."""
     cluster = make_cluster()
     device, quiet, old = make_device(cluster), make_device(cluster), make_device(cluster)
     base = datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)
@@ -216,21 +217,44 @@ def test_delivery_delay(app, client, db_session, make_cluster, make_device, make
     _reading(db_session, device, base, received_at=at(600))        # exactly 10 min: not over
     _reading(db_session, device, base, received_at=at(601))        # just over
     _reading(db_session, device, base, received_at=at(-30))        # device clock ahead
+    _reading(db_session, device, base, received_at=at(-120))       # 2 min ahead: within tolerance
+    _reading(db_session, device, base, received_at=at(-600))       # 10 min ahead: clock_ahead
     _reading(db_session, device, base)                             # not measured
     _reading(db_session, device, base, is_test=True, received_at=at(99_999))
+    _reading(db_session, device, base, is_test=True, received_at=at(-99_999))
     _reading(db_session, old, base)                                # only pre-feature rows
+    # Received 1h ago, stamped a year ahead: outside the timestamp window, so
+    # only clock_ahead_count (windowed by receive time) sees it.
+    _reading(db_session, quiet, base + timedelta(days=365), received_at=base)
     db_session.commit()
     _as(app, make_user(role=UserRole.SUPER_ADMIN))
     rows = _by_id(client.get("/monitoring/data-quality").json())
 
     d = rows[device.id]
-    assert d["delay_measured"] == 3
-    assert d["avg_delay_s"] == pytest.approx((600 + 601 - 30) / 3, abs=0.1)
-    assert (d["min_delay_s"], d["max_delay_s"]) == (-30.0, 601.0)
+    assert d["delay_measured"] == 5
+    assert d["avg_delay_s"] == pytest.approx((600 + 601 - 30 - 120 - 600) / 5, abs=0.1)
+    assert (d["min_delay_s"], d["max_delay_s"]) == (-600.0, 601.0)
     assert d["delayed_over_threshold"] == 1
+    assert d["clock_ahead_count"] == 1
+    assert rows[quiet.id]["clock_ahead_count"] == 1
+    assert rows[old.id]["clock_ahead_count"] == 0
     for r in (rows[quiet.id], rows[old.id]):
         assert r["delay_measured"] == 0 and r["delayed_over_threshold"] == 0
         assert r["avg_delay_s"] is r["min_delay_s"] is r["max_delay_s"] is None
+
+
+def test_clock_ahead_window_and_boundary(app, client, db_session, make_cluster, make_device, make_user):
+    """Exactly 5 min ahead is not counted ("more than"); readings received
+    before or after the 7-day window are not counted either."""
+    device = make_device(make_cluster())
+    now = datetime.utcnow().replace(microsecond=0)
+    for received, ahead in ((now - timedelta(hours=1), 300),     # exactly 5 min: tolerated
+                            (now - timedelta(days=8), 600),      # received before the window
+                            (now + timedelta(hours=1), 600)):    # received after the window
+        _reading(db_session, device, received + timedelta(seconds=ahead), received_at=received)
+    db_session.commit()
+    _as(app, make_user(role=UserRole.SUPER_ADMIN))
+    assert _by_id(client.get("/monitoring/data-quality").json())[device.id]["clock_ahead_count"] == 0
 
 
 class TestInvalidValuesReceived:

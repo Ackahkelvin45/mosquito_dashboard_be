@@ -1009,6 +1009,27 @@ the diel-activity profile used for intervention timing.
 
 ---
 
+## 18. CSV import accepts future timestamps; Data Quality counts clock-ahead readings
+
+- `POST /imports/sensor-readings` and `POST /imports/mosquito-events` no longer
+  reject a row whose `timestamp` / `detection_timestamp` is more than 5 minutes
+  in the future (the "is in the future" row error is gone). The value is stored
+  exactly as in the file. Reason: a device whose clock runs fast sends future
+  timestamps, MQTT ingest keeps them (the device's claim), so an export of that
+  data must re-import. Manually entered trap counts (`/trap-counts`) still
+  reject future periods.
+- `GET /monitoring/data-quality`: new per-device field
+  **`clock_ahead_count: int`** — live readings **received** in the window
+  (windowed by `received_at`, not `timestamp`, so a clock that jumped years
+  ahead is still caught) whose `timestamp` is more than 5 minutes after
+  `received_at` (delay < -300 s: device clock ahead). Test-mode readings and
+  readings without `received_at` (stored before the column existed, CSV-imported, HTTP-posted, or sent without a device timestamp) are not counted. The
+  delay figures (`delay_measured`, `avg/min/max_delay_s`,
+  `delayed_over_threshold`) are unchanged and still windowed by `timestamp`.
+  No fleet total.
+
+---
+
 ## Files changed (summary)
 
 | Area | Files |

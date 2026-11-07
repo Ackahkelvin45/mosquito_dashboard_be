@@ -4,7 +4,7 @@ from typing import Optional, List
 from app.crud.base import BaseRepository
 from app.device.models import (
     Device, DeviceCluster, SensorDeviceReading, MosquitoEvent, MosquitoIndividualReading,
-    LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING, ANALYSIS_SENSOR_READING,
+    LIVE_MOSQUITO_EVENT, LIVE_SENSOR_READING, ANALYSIS_SENSOR_READING, DEVICE_SENT_SENSOR_READING,
 )
 from app.device.schema import DeviceCreate, DeviceUpdate,SensorDataPayload,MosquitoEventPayload
 from datetime import datetime, timezone
@@ -167,13 +167,14 @@ class DeviceRepository(BaseRepository[Device]):
                 query = query.filter(Device.cluster_id.in_(cluster_ids))
         if trap_status is not None:
             # "On/off" reflects the trap_status of each device's most recent sensor reading
-            # (excluded readings skipped, like Device.latest_reading).
+            # (excluded and CSV-imported readings skipped, like Device.latest_reading —
+            # an imported row dated in the future must not pin the filter).
             latest_reading = (
                 self.session.query(
                     SensorDeviceReading.device_id,
                     func.max(SensorDeviceReading.timestamp).label("max_ts"),
                 )
-                .filter(ANALYSIS_SENSOR_READING)
+                .filter(ANALYSIS_SENSOR_READING, DEVICE_SENT_SENSOR_READING)
                 .group_by(SensorDeviceReading.device_id)
                 .subquery()
             )
@@ -185,6 +186,7 @@ class DeviceRepository(BaseRepository[Device]):
                         SensorDeviceReading.device_id == Device.id,
                         SensorDeviceReading.timestamp == latest_reading.c.max_ts,
                         ANALYSIS_SENSOR_READING,
+                        DEVICE_SENT_SENSOR_READING,
                     ),
                 )
                 .filter(SensorDeviceReading.trap_status == trap_status)

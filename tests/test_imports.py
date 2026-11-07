@@ -469,12 +469,23 @@ def test_lone_quote_from_old_exports_imports_as_empty(client, as_user, world, db
 @pytest.mark.parametrize("ts,reason", [
     ("2026-03-01", "no time of day"),
     ("2026-03-01T12:00:00", "no timezone"),
-    ("2999-01-01T00:00:00Z", "in the future"),
 ])
-def test_timestamp_needs_time_zone_and_not_future(client, as_user, world, ts, reason):
+def test_timestamp_needs_time_and_zone(client, as_user, world, ts, reason):
     as_user(world["admin"])
     res = post(client, "sensor-readings", sensor_csv((world["d1"], ts, "1", "True")), dry_run=True)
     assert reason in res.json()["errors"][0]["error"]
+
+
+def test_future_timestamps_import_as_is(client, as_user, world, db_session):
+    """A device clock running ahead: ingest keeps its time, so must import."""
+    as_user(world["admin"])
+    future = datetime(2999, 1, 1, 0, 0, 0, 123456)
+    cell = "2999-01-01T00:00:00.123456Z"
+    assert post(client, "sensor-readings", sensor_csv((world["d1"], cell, "1", "True"))).json()["imported"]
+    assert post(client, "mosquito-events", mosquito_csv((world["d1"], cell, "x"))).json()["imported"]
+    assert db_session.query(SensorDeviceReading).one().timestamp == future
+    assert db_session.query(MosquitoEvent).one().timestamp == future
+    assert db_session.query(MosquitoIndividualReading).one().detection_timestamp == future
 
 
 def test_count_must_be_one(client, as_user, world):
