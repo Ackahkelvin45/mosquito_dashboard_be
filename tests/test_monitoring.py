@@ -198,6 +198,23 @@ class TestMonitoringEndpoints:
         # In-memory state empty in tests -> falls back to fleet last_activity.
         assert body["last_message_at"] is not None
 
+    def test_invalid_values_counted_apart_from_errors(self, client, login_as, super_admin,
+                                                      db_session):
+        login_as(super_admin)
+        record_error(db_session, "invalid_value", device_uuid="d1", detail="battery=99")
+        record_error(db_session, "invalid_payload", topic="t")
+        # Older than 24h: counted in neither.
+        for error_type in ("invalid_value", "unknown_device"):
+            db_session.add(MqttIngestError(error_type=error_type,
+                                           occurred_at=datetime.utcnow() - timedelta(hours=25)))
+        db_session.commit()
+
+        body = client.get("/monitoring/mqtt/status").json()
+        assert body["errors_24h"] == 1
+        assert body["invalid_values_24h"] == 1
+        # The error feed still lists invalid_value rows.
+        assert client.get("/monitoring/mqtt/errors?error_type=invalid_value").json()["total"] == 2
+
     def test_traffic_buckets_zero_filled(self, client, login_as, super_admin,
                                          make_device, db_session):
         login_as(super_admin)

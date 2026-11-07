@@ -20,7 +20,8 @@ class MqttStatusResponse(BaseModel):
     last_message_at: Optional[datetime] = Field(
         None, description="Last MQTT message received from ANY device (in-memory; falls back to the fleet's latest activity after a restart)")
     messages_24h: int = Field(..., description="Successfully stored messages in the last 24h")
-    errors_24h: int = Field(..., description="Ingest failures in the last 24h (every occurrence, not deduped)")
+    errors_24h: int = Field(..., description="Ingest failures in the last 24h (every occurrence, not deduped); invalid values are counted separately in invalid_values_24h")
+    invalid_values_24h: int = Field(..., description="\"invalid_value\" rows in the last 24h: an impossible or unreadable field value was not stored as sent (blank, or OFF / server time where the field cannot be empty) and the rest of the message was stored (data quality, not an ingest failure)")
     devices_total: int
     devices_reporting: int = Field(..., description="Devices with sensor_data inside the offline threshold")
     silent_devices: list[SilentDevice] = Field(

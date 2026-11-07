@@ -81,11 +81,12 @@ def mqtt_status(session: Session = Depends(get_db)):
         .filter(MqttTrafficHourly.bucket_start >= day_ago - timedelta(hours=1))
         .scalar() or 0
     )
-    errors_24h = int(
-        session.query(func.count(MqttIngestError.id))
-        .filter(MqttIngestError.occurred_at >= day_ago)
-        .scalar() or 0
-    )
+    # "invalid_value" rows are data-quality flags (one field blanked, rest of
+    # the message stored), not ingest failures — counted separately.
+    errors_day = session.query(func.count(MqttIngestError.id)).filter(MqttIngestError.occurred_at >= day_ago)
+    is_invalid_value = MqttIngestError.error_type == "invalid_value"
+    errors_24h = int(errors_day.filter(~is_invalid_value).scalar() or 0)
+    invalid_values_24h = int(errors_day.filter(is_invalid_value).scalar() or 0)
     devices_total = int(session.query(func.count(Device.id)).scalar() or 0)
     devices_reporting = int(
         session.query(func.count(Device.id))
@@ -113,6 +114,7 @@ def mqtt_status(session: Session = Depends(get_db)):
         last_message_at=last_message_at,
         messages_24h=messages_24h,
         errors_24h=errors_24h,
+        invalid_values_24h=invalid_values_24h,
         devices_total=devices_total,
         devices_reporting=devices_reporting,
         silent_devices=[

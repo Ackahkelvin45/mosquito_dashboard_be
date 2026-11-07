@@ -284,6 +284,10 @@ def update_user(user_id: int, update_data: UserUpdate, session: Session = Depend
             # create an account no cluster admin can demote again)…
             if "role" in update_data.model_fields_set and update_data.role != existing.role:
                 raise HTTPException(status_code=403, detail="Only a super admin can change roles")
+            # …may not change anyone's email (new email + forgot-password =
+            # account takeover; exact compare, as UserService.update_user does)…
+            if "email" in update_data.model_fields_set and update_data.email != existing.email:
+                raise HTTPException(status_code=403, detail="Only a super admin can change a user's email")
             # …and may not move users to another cluster.
             if "cluster_id" in update_data.model_fields_set and update_data.cluster_id != current_user.cluster_id:
                 raise HTTPException(status_code=403, detail="Only a super admin can move users between clusters")

@@ -995,6 +995,20 @@ the diel-activity profile used for intervention timing.
 
 ---
 
+## 17. Email changes are super-admin-only; System Health splits out invalid values
+
+- `PATCH /auth/users/{id}`: only a SUPER_ADMIN may change a user's email —
+  any role, including USER → otherwise **403** "Only a super admin can change a
+  user's email" (a new email + forgot-password = account takeover). Re-sending
+  the unchanged email alongside other edits is allowed. `PATCH /auth/me` does
+  not edit email and is unaffected.
+- `GET /monitoring/mqtt/status`: `errors_24h` no longer counts `invalid_value`
+  rows (a field was not stored as sent, the rest of the message was — data quality, not
+  an ingest failure). New field **`invalid_values_24h: int`** counts them over
+  the same 24h window. `GET /monitoring/mqtt/errors` still lists them.
+
+---
+
 ## Files changed (summary)
 
 | Area | Files |

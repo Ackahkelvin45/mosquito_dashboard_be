@@ -4,7 +4,8 @@
    an admin action on devices the caller MANAGES — not any logged-in user on
    any visible (public) device. Audited.
 2. PATCH /auth/users/{id}: only a super admin may edit an ADMIN or SUPER_ADMIN
-   account (a cluster admin changing a peer's email + forgot-password = takeover).
+   account (a cluster admin changing a peer's email + forgot-password = takeover),
+   and only a super admin may change ANY user's email (same takeover, on a USER).
 """
 
 import pytest
@@ -112,13 +113,23 @@ class TestAdminAccountEdits:
         login_as(me)
         assert client.patch(f"/auth/users/{me.id}", json={"is_active": False}).status_code == 403
 
-    def test_cluster_admin_edits_user_in_cluster(self, client, login_as, make_user, make_cluster):
+    def test_cluster_admin_edits_user_in_cluster(self, client, login_as, make_user, make_cluster,
+                                                 db_session):
         cluster = make_cluster()
         member = make_user(cluster_id=cluster.id)
+        old_email = member.email
         login_as(make_user(role=UserRole.ADMIN, cluster_id=cluster.id))
+        # Email changes are super-admin only (new email + forgot-password = takeover)…
         res = client.patch(f"/auth/users/{member.id}", json={"email": "new@example.com", "is_active": False})
-        assert res.status_code == 200
-        assert res.json()["email"] == "new@example.com"
+        assert res.status_code == 403
+        assert res.json()["detail"] == "Only a super admin can change a user's email"
+        db_session.refresh(member)
+        assert member.email == old_email and member.is_active
+        # …other edits work, including re-sending the unchanged email.
+        res = client.patch(f"/auth/users/{member.id}", json={"is_active": False})
+        assert res.status_code == 200 and res.json()["is_active"] is False
+        res = client.patch(f"/auth/users/{member.id}", json={"email": old_email, "first_name": "Yara"})
+        assert res.status_code == 200 and res.json()["email"] == old_email
         # Role changes are super-admin only (ADMIN and SUPER_ADMIN alike)…
         for role in ("ADMIN", "SUPER_ADMIN"):
             assert client.patch(f"/auth/users/{member.id}", json={"role": role}).status_code == 403
@@ -131,3 +142,21 @@ class TestAdminAccountEdits:
         login_as(make_user(role=UserRole.SUPER_ADMIN))
         res = client.patch(f"/auth/users/{target.id}", json={"email": f"moved-{target.id}@example.com"})
         assert res.status_code == 200
+
+    def test_super_admin_changes_user_email(self, client, login_as, make_user, make_cluster):
+        member = make_user(cluster_id=make_cluster().id)
+        login_as(make_user(role=UserRole.SUPER_ADMIN))
+        res = client.patch(f"/auth/users/{member.id}", json={"email": f"renamed-{member.id}@example.com"})
+        assert res.status_code == 200
+        assert res.json()["email"] == f"renamed-{member.id}@example.com"
+
+    def test_cluster_admin_email_case_variants(self, client, login_as, make_user, make_cluster):
+        # Guard compares exactly; EmailStr lowercases only the domain part.
+        cluster = make_cluster()
+        member = make_user(cluster_id=cluster.id)
+        local, domain = member.email.split("@")
+        login_as(make_user(role=UserRole.ADMIN, cluster_id=cluster.id))
+        url = f"/auth/users/{member.id}"
+        assert client.patch(url, json={"email": f"{local}@{domain.upper()}"}).status_code == 200
+        assert client.patch(url, json={"email": f"{local.upper()}@{domain}"}).status_code == 403
+        assert client.patch(url, json={"email": None}).status_code == 403
