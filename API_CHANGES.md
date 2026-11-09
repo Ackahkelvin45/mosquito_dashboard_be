@@ -1030,6 +1030,24 @@ the diel-activity profile used for intervention timing.
 
 ---
 
+## 19. GPS: no-fix positions ignored; place names never outlive a move
+
+- A reported position within 1° of 0,0 (both |lat| and |lon| below 1) is a GPS
+  without a fix (open sea) and is ignored, like a null fix — silently, since
+  it is a normal, lasting state. An unreadable or out-of-range position is
+  ignored and logged as an `invalid_value` System Health error with its raw
+  values.
+- A stored position inside that box counts as no position: the first real fix
+  after it is not a "move" (no `DEVICE_LOCATION_CHANGED`).
+- When a device with stored coordinates moves (>= 50 m, or leaves a no-fix
+  position), `region`/`community` are cleared and re-geocoded, so a new spot
+  shows "—" rather than the old place's name. The geocode now runs after the
+  reading's transaction commits (never on rollback).
+- Existing rows are not rewritten; a device stored inside the box keeps it
+  until it reports a real fix (or an operator clears it).
+
+---
+
 ## Files changed (summary)
 
 | Area | Files |

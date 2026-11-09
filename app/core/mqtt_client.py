@@ -12,6 +12,7 @@ from app.device.imports import MOSQUITO_STRINGS, RowError, parse_bounded, parse_
 from app.monitoring import recorder
 from app.notification.events import NotificationEvent, emit
 from app.service.device_location_service import apply_reported_position
+from utils.coordinates import MAX_LAT, MAX_LON, normalize_coordinate, normalize_lat_lon
 from utils.trap_status import parse_trap_status
 
 logging.basicConfig(level=logging.INFO)
@@ -138,14 +139,22 @@ def _record_invalid(db, device: Device, invalid: list) -> None:
         recorder.record_error(db, "invalid_value", device_uuid=device.device_uuid, detail=detail)
 
 
-def _apply_position_from_payload(db, device: Device, data: dict) -> None:
+def _apply_position_from_payload(db, device: Device, data: dict, invalid: list) -> None:
     """Update the device's position if the payload carried a GPS fix.
+    An unreadable or out-of-range fix goes to `invalid` with its raw values.
+    An absent/null fix, or one near 0,0 (a GPS without a fix — a normal,
+    lasting state, so logging it would flood System Health), is simply no fix.
 
     Key-spelling tolerance lives in sightings.extract_raw_fix, shared with the
     unregistered-device path so both parse coordinates identically.
     """
     lat, lon = extract_raw_fix(data)
     if lat is None or lon is None:
+        return
+    if normalize_lat_lon(lat, lon) == (None, None):
+        if (normalize_coordinate(lat, MAX_LAT) is None
+                or normalize_coordinate(lon, MAX_LON) is None):
+            invalid.append(f"latitude={lat!r} longitude={lon!r}"[:500])
         return
 
     try:
@@ -183,7 +192,8 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
     can confirm connectivity, but never feed notifications or real device
     state (trap-flip detection, malfunction alerts, etc).
     """
-    _apply_position_from_payload(db, device, data)
+    invalid: list[str] = []
+    _apply_position_from_payload(db, device, data, invalid)
 
     # Trap-flip detection needs the state as it was BEFORE this reading
     # lands, scoped to real (non-test) readings only — a technician cycling
@@ -199,7 +209,6 @@ def handle_sensor_data(db, device: Device, data: dict, is_test: bool = False):
         )
         previous_trap_on = bool(previous[0]) if previous else False
 
-    invalid: list[str] = []
     device_ts = _logged_time(data, "timestamp", invalid)
     raw_trap = data.get("trap_status")
     if not (raw_trap in (True, False)
@@ -331,8 +340,8 @@ def handle_mosquito_event(db, device: Device, data: dict, is_test: bool = False)
         logger.info(f"No mosquito reading in payload for device {device.device_uuid}")
         return
 
-    _apply_position_from_payload(db, device, data)
     invalid: list[str] = []
+    _apply_position_from_payload(db, device, data, invalid)
     device_ts = _logged_time(data, "timestamp", invalid)
     outer_timestamp = device_ts or datetime.utcnow()
 

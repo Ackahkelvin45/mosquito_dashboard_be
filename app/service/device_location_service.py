@@ -17,13 +17,14 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.device.models import Device
 from app.notification.events import NotificationEvent, emit
 from app.service.geocoding_service import reverse_geocode
-from utils.coordinates import haversine_metres, normalize_lat_lon
+from utils.coordinates import MAX_LAT, MAX_LON, haversine_metres, normalize_coordinate, normalize_lat_lon
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +75,21 @@ def apply_reported_position(
     """
     lat, lon = normalize_lat_lon(latitude, longitude)
     if lat is None or lon is None:
+        if (normalize_coordinate(latitude, MAX_LAT) is None
+                or normalize_coordinate(longitude, MAX_LON) is None) and (
+                latitude is not None or longitude is not None):
+            logger.warning("Device %s reported unusable position %r,%r — ignored",
+                           device.device_uuid, latitude, longitude)
         return False  # nothing usable reported; keep whatever we already had
 
-    had_position = device.latitude is not None and device.longitude is not None
+    # A stored no-fix/garbage position is no position: leaving it is not a
+    # "move" (no notification, no bogus thousands-of-km distance).
+    old_lat, old_lon = normalize_lat_lon(device.latitude, device.longitude)
+    had_position = old_lat is not None
+    had_stored = device.latitude is not None or device.longitude is not None
     moved = True
     if had_position:
-        distance = haversine_metres(device.latitude, device.longitude, lat, lon)
+        distance = haversine_metres(old_lat, old_lon, lat, lon)
         moved = distance >= MIN_MOVE_METRES
 
     needs_labels = not (device.region and device.community)
@@ -90,6 +100,13 @@ def apply_reported_position(
         device.latitude = lat
         device.longitude = lon
         device.location_updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        if had_stored:
+            # The old labels describe the old (or junk) stored spot. Clear them
+            # so a new spot that geocodes to nothing (or not yet) shows "—",
+            # not a wrong place. Labels on a device with no stored coords at
+            # all were set by hand and are kept.
+            device.region = None
+            device.community = None
         logger.info("Device %s position updated to %s,%s", device.device_uuid, lat, lon)
         # Only a genuine relocation from a known position — the first fix a
         # device ever reports is not a "move".
@@ -100,9 +117,30 @@ def apply_reported_position(
     if geocode and _claim_geocode_slot(device.id, moved):
         # Detached from this transaction on purpose: the HTTP call can take
         # seconds and must not hold a DB transaction or stall the caller.
-        _dispatch_geocode(device.id, lat, lon)
+        # Queued until the caller commits — the worker compares against the
+        # committed position, so dispatching earlier would discard its result.
+        session.info.setdefault(_PENDING_KEY, {})[device.id] = (device.id, lat, lon)
 
     return moved
+
+
+_PENDING_KEY = "pending_geocodes"
+
+
+@event.listens_for(Session, "after_commit")
+def _dispatch_pending_geocodes(session) -> None:
+    if session.in_nested_transaction():
+        return  # a savepoint was released; wait for the outermost commit
+    for args in session.info.pop(_PENDING_KEY, {}).values():
+        _dispatch_geocode(*args)
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _drop_pending_geocodes(session, previous_transaction) -> None:
+    # A savepoint rollback leaves the outer transaction (and its position
+    # change) alive; only the outermost rollback discards the position.
+    if not previous_transaction.nested:
+        session.info.pop(_PENDING_KEY, None)
 
 
 def _dispatch_geocode(device_id: int, latitude: float, longitude: float) -> None:

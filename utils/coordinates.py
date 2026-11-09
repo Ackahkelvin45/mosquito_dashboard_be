@@ -11,6 +11,7 @@ from typing import Optional
 
 MAX_LAT = 90.0
 MAX_LON = 180.0
+NO_FIX_DEGREES = 1.0
 
 # Tried in order — the first that brings the value into range wins, matching
 # the frontend's normalizeCoordinate so both agree on the same answer.
@@ -43,8 +44,10 @@ def normalize_lat_lon(latitude, longitude) -> tuple[Optional[float], Optional[fl
     lon = normalize_coordinate(longitude, MAX_LON)
     if lat is None or lon is None:
         return None, None
-    # 0,0 ("null island") is what a GPS module reports before it gets a fix.
-    if lat == 0.0 and lon == 0.0:
+    # Near 0,0 ("null island") is what a GPS module reports before it gets a
+    # fix (exactly 0,0 or a few hundredths off it). Everything within 1° of
+    # 0,0 is open sea in the Gulf of Guinea, so no device can really be there.
+    if abs(lat) < NO_FIX_DEGREES and abs(lon) < NO_FIX_DEGREES:
         return None, None
     return lat, lon
 
