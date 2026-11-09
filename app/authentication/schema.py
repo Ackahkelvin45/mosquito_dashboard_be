@@ -51,7 +51,7 @@ class UserResponse(UserBase):
     updated_at: datetime = Field(...,description="Updated at of the user")
     cluster: Optional[ClusterSummary] = Field(None, description="The cluster this user belongs to")
     # FR-4: read-only here — toggled ONLY via POST /auth/me/two-factor
-    # (mandatory for ADMIN/SUPER_ADMIN regardless of this flag).
+    # (a per-user choice for every role, admins included).
     two_factor_enabled: bool = Field(False, description="Whether email-OTP 2FA is enabled for this account")
 
     model_config = ConfigDict(from_attributes=True)

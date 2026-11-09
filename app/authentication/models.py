@@ -16,8 +16,9 @@ class User(Base):
     last_name: Mapped[str] = mapped_column(String(100))
     hashed_password: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    # FR-4: mandatory for ADMIN/SUPER_ADMIN regardless of this flag (the
-    # service computes "effective 2FA"); USERs opt in via /auth/me/two-factor.
+    # Per-user choice for every role, admins included (toggled via
+    # /auth/me/two-factor); login challenges only when this is set AND the
+    # app-wide switch (app_settings.two_factor_login_enabled) is on.
     two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # Bumped on password reset / role change / deactivation / 2FA enable —
     # tokens carry it as "ver", so a bump invalidates every existing session.
