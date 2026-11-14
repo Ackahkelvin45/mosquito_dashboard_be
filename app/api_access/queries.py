@@ -51,6 +51,9 @@ SENSOR_READING_COLUMNS = {
     # Appended (not next to battery_voltage) so positional CSV readers of the
     # older column order keep working.
     "battery_pct": SensorDeviceReading.battery_pct,
+    # Late-upload visibility: server receive time and CSV import batch.
+    "received_at": SensorDeviceReading.received_at,
+    "import_batch_id": SensorDeviceReading.import_batch_id,
     # Admin exclusion flag, always LAST: True, or null/blank when included.
     # Excluded rows are still listed/exported; they're left out of analysis.
     "excluded": case((SensorDeviceReading.excluded_at.isnot(None), True)),
@@ -72,6 +75,9 @@ MOSQUITO_EVENT_COLUMNS = {
     "age_group": MosquitoIndividualReading.age_group,
     "sex": MosquitoIndividualReading.sex,
     "p_mosq": MosquitoIndividualReading.p_mosq,  # model confidence 0-1, raw
+    # Late-upload visibility: server receive time and CSV import batch.
+    "received_at": MosquitoEvent.received_at,
+    "import_batch_id": MosquitoEvent.import_batch_id,
     "excluded": case((MosquitoEvent.excluded_at.isnot(None), True)),
     "exclusion_reason": MosquitoEvent.exclusion_reason,
 }
