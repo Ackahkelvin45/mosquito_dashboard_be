@@ -230,4 +230,4 @@ def test_empty_state_and_targets(client, as_user, world):
     assert a["collections"] == [] and a["exact_match_share"] is None and a["by_genus"] == []
     assert [(t["name"], t["target_pct"], t["status"]) for t in body["targets"]] == [
         ("detection", 80, "not_measurable_yet"), ("sex", 75, "not_measurable_yet"),
-        ("age", 75, "not_measurable_yet")]
+        ("age", 75, "not_measurable_yet"), ("infection", 85, "not_measurable_yet")]

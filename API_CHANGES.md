@@ -1126,6 +1126,50 @@ the diel-activity profile used for intervention timing.
 
 ---
 
+## 22. System performance
+
+- `GET /model-performance` gains `system`: one list holding every
+  performance measure in the proposal. Same access as the endpoint (every
+  signed-in non-guest role).
+- Device measures (`uptime`, `data_completeness`, `gps_fix`) are returned to
+  ADMIN and SUPER_ADMIN only (as data-quality / device-health), scoped like
+  Data Quality: own cluster, super admin all; public clusters' devices are
+  never included. USER gets every other entry.
+- Each entry: `key`, `name`, `value` (null when not measured / no data),
+  `unit`, `status` (`measured` | `not_measured` | `no_data` = measurable but
+  nothing in the period), `period` (text; `Proposal target` for targets),
+  `how` (how it is measured, or why not), `rows` (per device / per site:
+  `label`, `value`, `detail`).
+- Keys:
+  - `uptime` (%): per device, over live device-sent sensor readings
+    (admin-excluded readings still count). A gap counts as down only beyond
+    the offline threshold (`gap − OFFLINE_AFTER_MIN`, the Offline-badge
+    rule), for the gap into the period, gaps inside it and the ongoing gap,
+    cut to the period. With no reading before the period, measured from the
+    device's first reading in it. Readings up to 5 min ahead of the end
+    (clock ahead) are taken in and clipped. Null for a device with no
+    readings ever; fleet = average of the rest.
+  - `data_completeness` (%), shown as "Value completeness (of readings
+    received)": temperature (outside OR inside), humidity (outside OR
+    inside) and battery (`battery_pct` within 0-100, or a voltage) present in
+    live device-sent readings; fleet = pooled.
+  - `gps_fix`: devices whose stored position is a usable fix, unit
+    `of N devices` (same rule as device-health `gps_fix`).
+  - `accuracy_per_site` (%): the Agreement section's own collections (same
+    scope: own cluster + public, super admin all) grouped by region /
+    community; share of counted genus/sex groups where AI = manual.
+    Collections whose device sent nothing are left out. Count agreement,
+    not per-detection accuracy.
+  - Always `not_measured`, value null: `gps_accuracy` (no HDOP sent),
+    `audio_quality`, `false_positives_by_zone`, `false_negatives_by_zone`,
+    `zone_bias` (needs one-by-one checked detections; no ecological-zone
+    field), `load_time` (not recorded), `target_detection` / `_sex` / `_age`
+    / `_infection` (from `targets`).
+- `targets` gains `infection` (85%, not_measurable_yet).
+- `gps_fix(device)` helper extracted in `device_health.py`. No migration.
+
+---
+
 ## Files changed (summary)
 
 | Area | Files |
@@ -1140,4 +1184,5 @@ the diel-activity profile used for intervention timing.
 | Notification system | `app/notification/**` (models, enums, schema, repository, service, channels/, providers/, events.py, routes.py, push_routes.py), `app/jobs/**`, trigger emits in `app/core/mqtt_client.py`, `app/service/{user,reseacher_request,device,device_cluster,device_location}_service.py`, `app/authentication/routes.py`, router + lifespan in `app/core/main.py`, `alembic/versions/b8c9d0e1f2a3_add_notification_tables.py`, `pyproject.toml` (pywebpush); FE: `components/notifications/*`, `app/(dashboard)/notifications/page.tsx`, `hooks/notification.ts`, `hooks/usePushSubscription.ts`, `queries/notification/*`, `actions/notificationMutation.ts`, `lib/date.ts`, `public/sw.js`; docs: `docs/notifications/**` |
 | Alert status | `app/notification/{models,schema,routes,service}.py`, `app/notification/repository/notification_repository.py`, `app/audit/models.py`, `app/jobs/summaries.py`, `alembic/versions/6f7a8b9c0d1e_add_notification_acknowledged.py`, `tests/test_alert_status.py`; FE: `app/(dashboard)/notifications/page.tsx`, `components/notifications/NotificationItem.tsx`, `queries/notification/notificationQueries.ts`, `actions/notificationMutation.ts`, `hooks/notification.ts`, `lib/date.ts` |
 | Device health | `app/monitoring/device_health.py`, `app/monitoring/{data_quality,schema}.py`, `app/device/schema.py`, `app/core/main.py`, `tests/test_device_health.py`; FE: `app/(dashboard)/device-health/page.tsx`, `components/devices/DeviceHealth.tsx`, `app/(dashboard)/devices/[id]/page.tsx`, `app/(dashboard)/layout.tsx`, `components/layout/Sidebar.tsx`, `hooks/monitoring.ts`, `queries/monitoring/monitoringQueries.ts` |
+| System performance | `app/monitoring/system_performance.py`, `app/monitoring/{model_performance,device_health}.py`, `tests/test_system_performance.py`, `tests/test_model_performance.py`; FE: `app/(dashboard)/model-performance/page.tsx`, `queries/monitoring/monitoringQueries.ts` |
 | Dashboard charts | `app/dashboard/routes.py`, `app/dashboard/schema.py`, `app/service/dashboard_service.py` |

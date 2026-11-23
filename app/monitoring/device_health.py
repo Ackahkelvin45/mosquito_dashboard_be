@@ -32,6 +32,13 @@ CORE_SENSORS = {
 }
 
 
+def gps_fix(device: Device) -> Optional[bool]:
+    """True = usable stored fix, False = stored but unusable (e.g. 0,0), None = no position."""
+    if device.latitude is None and device.longitude is None:
+        return None
+    return normalize_lat_lon(device.latitude, device.longitude)[0] is not None
+
+
 def _latest_reading(session: Session, device_id: int, now: datetime) -> Optional[SensorDeviceReading]:
     """Newest live, device-sent, non-excluded reading — skipping rows stamped in
     the future (a clock running ahead must not pin an old value as "latest")."""
@@ -80,10 +87,7 @@ def device_health(
         if pct is not None and not 0 <= pct <= 100:
             pct = None  # impossible value: not a reading (counted by Data Quality)
         link = r.esp1_link_alive if r else None
-        if d.latitude is None and d.longitude is None:
-            gps = None
-        else:
-            gps = normalize_lat_lon(d.latitude, d.longitude)[0] is not None
+        gps = gps_fix(d)
         online = is_online(d.last_sensor_data_at)
 
         faults = []

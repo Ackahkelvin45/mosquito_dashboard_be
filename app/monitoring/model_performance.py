@@ -23,11 +23,13 @@ from pydantic import BaseModel
 from sqlalchemy import and_, case, func
 from sqlalchemy.orm import Session
 
+from app.authentication.enums import UserRole
 from app.authentication.schema import UserResponse
 from app.core.database import get_db
 from app.core.security.permissions import visible_cluster_ids
 from app.device.models import ANALYSIS_MOSQUITO_EVENT, Device, MosquitoEvent, MosquitoIndividualReading
-from app.monitoring.data_quality import _count_if
+from app.monitoring.data_quality import _count_if, report_scope
+from app.monitoring.system_performance import Measure, build_measures
 from app.trap_counts.models import ManualTrapCount
 from app.trap_counts.routes import compare_collections, require_member
 
@@ -36,7 +38,7 @@ router = APIRouter()
 LOW_CONFIDENCE = 0.5
 # (label, lower inclusive, upper exclusive; None = open / up to 1 inclusive)
 BUCKETS = (("<0.5", None, 0.5), ("0.5–0.7", 0.5, 0.7), ("0.7–0.9", 0.7, 0.9), ("≥0.9", 0.9, None))
-TARGETS = (("detection", 80), ("sex", 75), ("age", 75))  # grant targets, % accuracy
+TARGETS = (("detection", 80), ("sex", 75), ("age", 75), ("infection", 85))  # grant targets, % accuracy
 COLLECTION_RULE = "A manual collection is included only if its whole period lies inside the window."
 
 
@@ -141,6 +143,8 @@ class ModelPerformanceReport(BaseModel):
     confidence: ConfidenceReport
     agreement: AgreementReport
     targets: list[Target]
+    # Every proposal measure; device measures admins only, own cluster — see system_performance.py.
+    system: list[Measure]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -230,7 +234,9 @@ def _confidence(session: Session, scope: Optional[set[int]], start: datetime, en
     )
 
 
-def _agreement(session: Session, scope: Optional[set[int]], start: datetime, end: datetime) -> AgreementReport:
+def _collections(session: Session, scope: Optional[set[int]], start: datetime, end: datetime):
+    """Manual collections in the window, compared with the AI, plus each
+    device's site (region / community) for System performance."""
     q = (
         session.query(ManualTrapCount, Device)
         .join(Device, Device.id == ManualTrapCount.device_id)
@@ -238,9 +244,12 @@ def _agreement(session: Session, scope: Optional[set[int]], start: datetime, end
     )
     if scope is not None:
         q = q.filter(Device.cluster_id.in_(scope))
-    collections = compare_collections(
-        session, q.order_by(ManualTrapCount.period_end.desc(), ManualTrapCount.id).all())
+    rows = q.order_by(ManualTrapCount.period_end.desc(), ManualTrapCount.id).all()
+    site_of = {d.id: " / ".join(p for p in (d.region, d.community) if p) or "Location not set" for _, d in rows}
+    return compare_collections(session, rows), site_of
 
+
+def _agreement(collections: list) -> AgreementReport:
     compared = [c for c in collections if c.device_reporting]
     groups = [g for c in compared for g in c.groups]
     per_genus: dict = defaultdict(lambda: [0, 0, 0, 0])  # groups, manual, ai, Σ|diff|
@@ -276,6 +285,7 @@ def _targets(age_group_reported: int) -> list[Target]:
                      "counts only give count agreement, and mean confidence is not accuracy.",
         "sex": "Needs each detection's sex checked by a person. Manual counts by sex give count "
                "agreement only.",
+        "infection": "Devices don't report infection status, and no infection test results are entered.",
         "age": ("No detection in this period has an age value (age_group is empty), so there is "
                 "nothing to measure." if age_group_reported == 0 else
                 f"{age_group_reported} detections report an age, but none is checked against a "
@@ -286,16 +296,21 @@ def _targets(age_group_reported: int) -> list[Target]:
 
 
 def build_report(session: Session, scope: Optional[set[int]], days: int,
-                 now: Optional[datetime] = None) -> ModelPerformanceReport:
+                 now: Optional[datetime] = None, *,
+                 device_scope: Optional[set[int]], device_measures: bool) -> ModelPerformanceReport:
     window_end = now or datetime.utcnow()
     window_start = window_end - timedelta(days=days)
     confidence = _confidence(session, scope, window_start, window_end)
+    targets = _targets(confidence.age_group_reported)
+    collections, site_of = _collections(session, scope, window_start, window_end)
     return ModelPerformanceReport(
         days=days, window_start=window_start, window_end=window_end,
         low_confidence_threshold=LOW_CONFIDENCE,
         confidence=confidence,
-        agreement=_agreement(session, scope, window_start, window_end),
-        targets=_targets(confidence.age_group_reported),
+        agreement=_agreement(collections),
+        targets=targets,
+        system=build_measures(session, device_scope, device_measures, window_start, window_end, days,
+                              targets, collections, site_of),
     )
 
 
@@ -305,4 +320,6 @@ def model_performance(
     session: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_member),
 ):
-    return build_report(session, visible_cluster_ids(session, current_user), days)
+    return build_report(session, visible_cluster_ids(session, current_user), days,
+                        device_scope=report_scope(current_user),
+                        device_measures=current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN))
