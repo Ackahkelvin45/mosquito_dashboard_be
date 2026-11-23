@@ -378,13 +378,28 @@ class NotificationService:
         return NotificationResponse.model_validate(notification)
 
     def set_handled(self, notification_id: int, user_id: int, handled: bool) -> tuple[NotificationResponse, int]:
-        """Mark/unmark the real-world alert handled for EVERY recipient. Only
-        a recipient (row owner) can act — cluster scoping is inherited from
-        the fan-out, so non-recipients get the usual 404."""
+        """Mark/unmark the real-world alert handled (= closed) for EVERY
+        recipient. Only a recipient (row owner) can act — cluster scoping is
+        inherited from the fan-out, so non-recipients get the usual 404."""
+        return self._set_shared(notification_id, user_id, "handled", handled)
+
+    def set_acknowledged(self, notification_id: int, user_id: int,
+                         acknowledged: bool) -> tuple[NotificationResponse, int]:
+        """Same sharing/permission rules as handled. A closed alert must be
+        reopened first, so acknowledged_at can never land after handled_at."""
+        return self._set_shared(notification_id, user_id, "acknowledged", acknowledged)
+
+    def _set_shared(self, notification_id: int, user_id: int, field: str,
+                    on: bool) -> tuple[NotificationResponse, int]:
         notification = self._get_owned_or_404(notification_id, user_id)
         if notification.notification_type not in HANDLEABLE_TYPES:
-            raise HTTPException(status_code=400, detail="Only alerts can be marked as handled")
-        changed = self.notification_repository.set_handled(notification, user_id if handled else None)
+            raise HTTPException(status_code=400, detail=f"Only alerts can be marked as {field}")
+        changed = self.notification_repository.set_shared_stamp(
+            notification, field, user_id if on else None)
+        # Checked AFTER the guarded UPDATE (which skips closed alerts), so a
+        # close that lands concurrently is caught too.
+        if field == "acknowledged" and not changed and notification.handled_at is not None:
+            raise HTTPException(status_code=409, detail="Alert is closed; reopen it first")
         return NotificationResponse.model_validate(notification), changed
 
     def delete(self, notification_id: int, user_id: int) -> None:
@@ -408,6 +423,7 @@ class NotificationService:
         search: Optional[str] = None,
         sort: str = "newest",
         handled: Optional[bool] = None,
+        status: Optional[str] = None,
     ) -> Page[NotificationResponse]:
         # Filtering/COUNT/OFFSET happen in SQL (high-volume table) — the repo
         # returns (items, total) and we build the house Page envelope here.
@@ -423,6 +439,7 @@ class NotificationService:
             search=search,
             sort=sort,
             handled=handled,
+            status=status,
         )
         total_pages = (total + page_size - 1) // page_size if page_size else 0
         return Page[NotificationResponse](

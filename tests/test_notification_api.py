@@ -16,6 +16,8 @@ NOTIFICATION_KEYS = {
     "payload", "icon", "action_url", "cluster_id", "device_id",
     "read_at", "archived_at", "delivered_at", "created_at", "expires_at",
     "handleable", "handled_at", "handled_by_name",
+    "acknowledged_at", "acknowledged_by_name", "status",
+    "time_to_acknowledge_s", "time_to_close_s",
 }
 
 

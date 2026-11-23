@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,6 +32,11 @@ class NotificationResponse(BaseModel):
     handleable: bool = Field(False, description="Whether this is an alert that can be marked handled")
     handled_at: Optional[datetime] = Field(None, description="When the alert was handled, shared by all recipients (naive UTC)")
     handled_by_name: Optional[str] = Field(None, description="Full name of the user who handled the alert")
+    acknowledged_at: Optional[datetime] = Field(None, description="When the alert was acknowledged, shared by all recipients (naive UTC). Null if it was closed without being acknowledged")
+    acknowledged_by_name: Optional[str] = Field(None, description="Full name of the user who acknowledged the alert")
+    status: Optional[Literal["opened", "acknowledged", "closed"]] = Field(None, description="Alert status; closed = handled. Null for informational notifications")
+    time_to_acknowledge_s: Optional[int] = Field(None, description="Seconds from created_at to acknowledged_at; null if not acknowledged")
+    time_to_close_s: Optional[int] = Field(None, description="Seconds from created_at to handled_at (closed); null if not closed")
 
     model_config = ConfigDict(from_attributes=True)
 

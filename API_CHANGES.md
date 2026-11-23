@@ -1048,6 +1048,44 @@ the diel-activity profile used for intervention timing.
 
 ---
 
+## 20. Alert status: opened, acknowledged, closed; response times
+
+- Alerts (the `handleable` types) now have three statuses: **opened** (new) →
+  **acknowledged** (someone is on it) → **closed** (dealt with). "Closed" is
+  the existing `handled_at` / `handled_by_name`; `PATCH /notifications/{id}/handled`
+  and `/unhandled` work as before (= close / reopen).
+- New `PATCH /notifications/{id}/acknowledged` and `/unacknowledged`. Same
+  rules as handled: only a recipient can act (others get 404), informational
+  notifications get 400, the stamp is shared by every recipient of the same
+  alert (`alert_group`; legacy rows without one only change themselves), a
+  second acknowledge never overwrites the first. A closed alert returns
+  **409** "Alert is closed; reopen it first" for both — enforced inside the
+  UPDATE itself, so a close landing at the same moment still wins. Audited as
+  `ALERT_ACKNOWLEDGED` / `ALERT_UNACKNOWLEDGED` (no-op clicks are not audited).
+- Closing an alert that was never acknowledged is allowed; `acknowledged_at`
+  stays null (never backfilled). Reopening keeps an earlier acknowledgement.
+- `NotificationResponse` new fields: **`acknowledged_at`**,
+  **`acknowledged_by_name`**, **`status`** (`"opened" | "acknowledged" |
+  "closed"`, null for informational notifications), **`time_to_acknowledge_s`**
+  and **`time_to_close_s`** (whole seconds from `created_at` to
+  `acknowledged_at` / `handled_at`; null when that step did not happen).
+- `GET /notifications?status=opened|acknowledged|closed` (anything else →
+  422). Combines with the other filters, including `handled` (AND).
+- Daily/weekly summary payload new keys: `reporting_devices` (sensor_data
+  within `NOTIFY_OFFLINE_AFTER_MIN`, the same rule as the `is_active` badge),
+  `silent_devices` (the rest, including devices that never sent sensor_data),
+  `alerts_opened`, `alerts_acknowledged`, `alerts_closed` (in the period) and
+  `alerts_still_open` (not closed now, any age). Alerts are counted once per
+  emission, not once per recipient, and only while at least one recipient's
+  row is live (not deleted, not expired); cluster summaries count that
+  cluster's alerts, the super-admin summary counts all. The body text
+  includes them. A cluster with no devices and no detections is no longer
+  skipped if it has alert activity or alerts still open.
+- Migration `6f7a8b9c0d1e`: adds nullable `notifications.acknowledged_at` and
+  `acknowledged_by_user_id` (FK users). No backfill.
+
+---
+
 ## Files changed (summary)
 
 | Area | Files |
@@ -1060,4 +1098,5 @@ the diel-activity profile used for intervention timing.
 | Forgot password | `app/authentication/models.py`, `app/authentication/schema.py`, `app/authentication/routes.py`, `app/authentication/repository/userrepository.py`, `app/authentication/repository/password_reset_repository.py`, `app/service/user_service.py`, `app/service/email_service.py`, `alembic/versions/c3d4e5f6a7b8_add_password_reset_otps.py` |
 | CORS fix | `app/core/main.py` |
 | Notification system | `app/notification/**` (models, enums, schema, repository, service, channels/, providers/, events.py, routes.py, push_routes.py), `app/jobs/**`, trigger emits in `app/core/mqtt_client.py`, `app/service/{user,reseacher_request,device,device_cluster,device_location}_service.py`, `app/authentication/routes.py`, router + lifespan in `app/core/main.py`, `alembic/versions/b8c9d0e1f2a3_add_notification_tables.py`, `pyproject.toml` (pywebpush); FE: `components/notifications/*`, `app/(dashboard)/notifications/page.tsx`, `hooks/notification.ts`, `hooks/usePushSubscription.ts`, `queries/notification/*`, `actions/notificationMutation.ts`, `lib/date.ts`, `public/sw.js`; docs: `docs/notifications/**` |
+| Alert status | `app/notification/{models,schema,routes,service}.py`, `app/notification/repository/notification_repository.py`, `app/audit/models.py`, `app/jobs/summaries.py`, `alembic/versions/6f7a8b9c0d1e_add_notification_acknowledged.py`, `tests/test_alert_status.py`; FE: `app/(dashboard)/notifications/page.tsx`, `components/notifications/NotificationItem.tsx`, `queries/notification/notificationQueries.ts`, `actions/notificationMutation.ts`, `hooks/notification.ts`, `lib/date.ts` |
 | Dashboard charts | `app/dashboard/routes.py`, `app/dashboard/schema.py`, `app/service/dashboard_service.py` |

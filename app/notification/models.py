@@ -63,6 +63,12 @@ class Notification(Base):
     handled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     handled_by_user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
     handled_by = relationship("User", foreign_keys=[handled_by_user_id])
+    # Alert status: opened (neither set) -> acknowledged -> closed (= handled).
+    # Shared across the alert_group like handled. Closing without
+    # acknowledging leaves these NULL (never backfilled).
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    acknowledged_by_user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    acknowledged_by = relationship("User", foreign_keys=[acknowledged_by_user_id])
     # Naive UTC — house convention on the event path.
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -71,8 +77,32 @@ class Notification(Base):
         return self.handled_by.full_name if self.handled_by else None
 
     @property
+    def acknowledged_by_name(self) -> str | None:
+        return self.acknowledged_by.full_name if self.acknowledged_by else None
+
+    @property
     def handleable(self) -> bool:
         return self.notification_type in HANDLEABLE_TYPES
+
+    @property
+    def status(self) -> str | None:
+        """opened / acknowledged / closed for alerts; None for informational rows."""
+        if not self.handleable:
+            return None
+        if self.handled_at:
+            return "closed"
+        return "acknowledged" if self.acknowledged_at else "opened"
+
+    def _seconds_since_created(self, at: datetime | None) -> int | None:
+        return int((at - self.created_at).total_seconds()) if at and self.created_at else None
+
+    @property
+    def time_to_acknowledge_s(self) -> int | None:
+        return self._seconds_since_created(self.acknowledged_at)
+
+    @property
+    def time_to_close_s(self) -> int | None:
+        return self._seconds_since_created(self.handled_at)
 
     def __repr__(self):
         return (

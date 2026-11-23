@@ -43,6 +43,8 @@ def list_notifications(
     search: Optional[str] = Query(default=None, description="Search across title and body"),
     sort: str = Query(default="newest", pattern="^(newest|oldest)$"),
     handled: Optional[bool] = Query(default=None, description="true = handled alerts, false = alerts awaiting action"),
+    status_: Optional[str] = Query(default=None, alias="status", pattern="^(opened|acknowledged|closed)$",
+                                   description="Alert status; combines with handled (AND)"),
     current_user: UserResponse = Depends(get_current_user),
 ):
     try:
@@ -52,6 +54,7 @@ def list_notifications(
             unread_only=unread_only, category=category,
             severity=severity, notification_type=type_,
             archived=archived, search=search, sort=sort, handled=handled,
+            status=status_,
         )
     except Exception as e:
         raise e
@@ -222,14 +225,32 @@ def mark_unhandled(notification_id: int, session: Session = Depends(get_db),
     return _set_handled(session, notification_id, current_user, False)
 
 
+@router.patch("/{notification_id}/acknowledged", status_code=status.HTTP_200_OK, response_model=NotificationResponse)
+def mark_acknowledged(notification_id: int, session: Session = Depends(get_db),
+                      current_user: UserResponse = Depends(get_current_user)):
+    return _set_handled(session, notification_id, current_user, True, field="acknowledged")
+
+
+@router.patch("/{notification_id}/unacknowledged", status_code=status.HTTP_200_OK, response_model=NotificationResponse)
+def mark_unacknowledged(notification_id: int, session: Session = Depends(get_db),
+                        current_user: UserResponse = Depends(get_current_user)):
+    return _set_handled(session, notification_id, current_user, False, field="acknowledged")
+
+
 def _set_handled(session: Session, notification_id: int, current_user: UserResponse,
-                 handled: bool) -> NotificationResponse:
+                 on: bool, field: str = "handled") -> NotificationResponse:
     from app.audit.models import AuditAction
     from app.audit.recorder import audit
 
-    result, changed = NotificationService(session).set_handled(notification_id, current_user.id, handled)
-    if changed:  # a no-op click (already handled/unhandled) is not an action
-        audit(session, AuditAction.ALERT_HANDLED if handled else AuditAction.ALERT_UNHANDLED,
+    service = NotificationService(session)
+    if field == "acknowledged":
+        result, changed = service.set_acknowledged(notification_id, current_user.id, on)
+        action = AuditAction.ALERT_ACKNOWLEDGED if on else AuditAction.ALERT_UNACKNOWLEDGED
+    else:
+        result, changed = service.set_handled(notification_id, current_user.id, on)
+        action = AuditAction.ALERT_HANDLED if on else AuditAction.ALERT_UNHANDLED
+    if changed:  # a no-op click (already in that state) is not an action
+        audit(session, action,
               actor_user_id=current_user.id, actor_email=current_user.email,
               target_type="notification", target_id=notification_id,
               detail={"notification_type": str(result.notification_type)})

@@ -75,6 +75,7 @@ class NotificationRepository(BaseRepository[Notification]):
         search: Optional[str] = None,
         sort: str = "newest",
         handled: Optional[bool] = None,
+        status: Optional[str] = None,
     ) -> Tuple[List[Notification], int]:
         """Return (page_items, total) filtered and paged in SQL.
 
@@ -104,6 +105,15 @@ class NotificationRepository(BaseRepository[Notification]):
             query = query.filter(
                 Notification.handled_at.is_(None),
                 Notification.notification_type.in_(HANDLEABLE_TYPES),
+            )
+        if status == "closed":
+            query = query.filter(Notification.handled_at.isnot(None))
+        elif status in ("opened", "acknowledged"):
+            query = query.filter(
+                Notification.handled_at.is_(None),
+                Notification.notification_type.in_(HANDLEABLE_TYPES),
+                Notification.acknowledged_at.is_(None) if status == "opened"
+                else Notification.acknowledged_at.isnot(None),
             )
         if search:
             # Escape LIKE metacharacters so a search for "100%" or "_" matches
@@ -189,23 +199,28 @@ class NotificationRepository(BaseRepository[Notification]):
             self.session.refresh(notification)
         return notification
 
-    def set_handled(self, notification: Notification, user_id: Optional[int]) -> int:
-        """Stamp (user_id) or clear (None) handled state on every row of the
+    def set_shared_stamp(self, notification: Notification, field: str, user_id: Optional[int]) -> int:
+        """Stamp (user_id) or clear (None) `<field>_at` / `<field>_by_user_id`
+        (field = "handled" or "acknowledged") on every row of the
         notification's alert_group in one UPDATE; legacy rows without a group
-        only touch themselves. Marking never overwrites an existing handler."""
+        only touch themselves. Marking never overwrites an existing stamp."""
+        at = getattr(Notification, f"{field}_at")
+        by = getattr(Notification, f"{field}_by_user_id")
         query = self.session.query(Notification).filter(
             Notification.alert_group == notification.alert_group
             if notification.alert_group
             else Notification.id == notification.id
         )
-        if user_id is not None:
+        if field == "acknowledged":
+            # Atomic guard: a close committed after the service's check must
+            # still win — never stamp/clear acknowledgement on a closed alert.
             query = query.filter(Notification.handled_at.is_(None))
-            values = {Notification.handled_at: datetime.utcnow(),
-                      Notification.handled_by_user_id: user_id}
+        if user_id is not None:
+            query = query.filter(at.is_(None))
+            values = {at: datetime.utcnow(), by: user_id}
         else:
-            query = query.filter(Notification.handled_at.is_not(None))
-            values = {Notification.handled_at: None,
-                      Notification.handled_by_user_id: None}
+            query = query.filter(at.is_not(None))
+            values = {at: None, by: None}
         updated = query.update(values, synchronize_session=False)
         self.session.commit()
         self.session.refresh(notification)

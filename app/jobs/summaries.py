@@ -2,7 +2,8 @@
 
 Daily at NOTIFY_DAILY_SUMMARY_UTC (default 07:00 UTC) and weekly on Monday at
 the same time. Per cluster, the last 24h/7d are aggregated (detection events,
-mosquito total, top species, device/offline/low-battery counts) and a
+mosquito total, top species, device reporting/silent/offline/low-battery
+counts, alerts opened/acknowledged/closed in the period + still open) and a
 DAILY_SUMMARY / WEEKLY_SUMMARY is emitted per recipient — events.py expects
 `user` (+ stats/body) per its ctx docs, so this job resolves the recipients
 itself: active cluster members + active cluster admins. Super admins get ONE
@@ -15,11 +16,12 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import String, cast, distinct, func, or_
 
 from app.authentication.enums import UserRole
 from app.authentication.models import User
 from app.core.database import SessionLocal
+from app.device.schema import OFFLINE_AFTER_MIN
 from app.device.models import (
     Device,
     DeviceCluster,
@@ -28,7 +30,9 @@ from app.device.models import (
     ANALYSIS_MOSQUITO_EVENT,
 )
 from app.notification.alert_settings import get_thresholds
+from app.notification.enums import HANDLEABLE_TYPES
 from app.notification.events import NotificationEvent, emit
+from app.notification.models import Notification
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +51,9 @@ def _run_summary(event: NotificationEvent, *, hours: int, period_label: str) -> 
         emitted = 0
 
         for cluster in session.query(DeviceCluster).all():
-            stats = _device_group_stats(session, cluster.devices, since)
-            if stats["device_count"] == 0 and stats["mosquito_events"] == 0:
+            stats = {**_device_group_stats(session, cluster.devices, since),
+                     **alert_stats(session, since, cluster_id=cluster.id)}
+            if not _has_news(stats):
                 continue  # nothing to report
             body = _summary_body(f"Cluster '{cluster.name}'", stats, period_label)
             payload = {"cluster_id": cluster.id, "cluster": cluster.name,
@@ -59,8 +64,9 @@ def _run_summary(event: NotificationEvent, *, hours: int, period_label: str) -> 
 
         # Super admins get one global summary instead of one per cluster.
         all_devices = session.query(Device).all()
-        stats = _device_group_stats(session, all_devices, since)
-        if stats["device_count"] or stats["mosquito_events"]:
+        stats = {**_device_group_stats(session, all_devices, since),
+                 **alert_stats(session, since)}
+        if _has_news(stats):
             body = _summary_body("All clusters", stats, period_label)
             payload = {"cluster_id": None, "scope": "global",
                        "period": period_label, **stats}
@@ -69,6 +75,12 @@ def _run_summary(event: NotificationEvent, *, hours: int, period_label: str) -> 
                 emitted += 1
 
         logger.info("%s: emitted %d summary notification(s)", event, emitted)
+
+
+def _has_news(stats: dict) -> bool:
+    return bool(stats["device_count"] or stats["mosquito_events"]
+                or stats["alerts_opened"] or stats["alerts_acknowledged"]
+                or stats["alerts_closed"] or stats["alerts_still_open"])
 
 
 def detection_stats(session, device_ids: list[int], since: datetime,
@@ -115,11 +127,48 @@ def detection_stats(session, device_ids: list[int], since: datetime,
     }
 
 
+def alert_stats(session, since: datetime, cluster_id: Optional[int] = None) -> dict:
+    """Alerts (HANDLEABLE_TYPES) opened / acknowledged / closed since `since`,
+    plus how many are not closed right now. One alert = one emission
+    (alert_group), not one per recipient; legacy rows without a group count
+    once each. Only alerts with at least one live row count (not deleted, not
+    expired — the read-path rule); stamps are shared per group, so filtering
+    rows is the same as filtering groups. cluster_id=None counts every alert
+    (global summary)."""
+    alert_key = distinct(func.coalesce(Notification.alert_group,
+                                       cast(Notification.id, String)))
+    now = datetime.utcnow()
+    base = [
+        Notification.notification_type.in_(HANDLEABLE_TYPES),
+        Notification.deleted_at.is_(None),
+        or_(Notification.expires_at.is_(None), Notification.expires_at > now),
+    ]
+    if cluster_id is not None:
+        base.append(Notification.cluster_id == cluster_id)
+
+    def count(*criteria) -> int:
+        return session.query(func.count(alert_key)).filter(*base, *criteria).scalar() or 0
+
+    return {
+        "alerts_opened": count(Notification.created_at >= since),
+        "alerts_acknowledged": count(Notification.acknowledged_at >= since),
+        "alerts_closed": count(Notification.handled_at >= since),
+        "alerts_still_open": count(Notification.handled_at.is_(None)),
+    }
+
+
 def _device_group_stats(session, devices, since: datetime) -> dict:
     device_ids = [device.id for device in devices]
     detections = detection_stats(session, device_ids, since)
 
     offline_devices = sum(1 for device in devices if device.offline_since is not None)
+    # Same rule as the device is_active badge: sensor_data within
+    # OFFLINE_AFTER_MIN. Never-reported devices count as silent.
+    reporting_cutoff = datetime.utcnow() - timedelta(minutes=OFFLINE_AFTER_MIN)
+    reporting_devices = sum(
+        1 for device in devices
+        if device.last_sensor_data_at is not None and device.last_sensor_data_at >= reporting_cutoff
+    )
     # Resolved live (never from-imported) so the digest count always agrees
     # with the alert threshold an admin may have edited at runtime.
     battery_critical_v = get_thresholds().battery_critical_v
@@ -137,6 +186,8 @@ def _device_group_stats(session, devices, since: datetime) -> dict:
         "device_count": len(device_ids),
         **detections,
         "offline_devices": offline_devices,
+        "reporting_devices": reporting_devices,
+        "silent_devices": len(device_ids) - reporting_devices,
         "low_battery_devices": low_battery_devices,
     }
 
@@ -150,8 +201,14 @@ def _summary_body(scope_label: str, stats: dict, period_label: str) -> str:
         f"{stats['mosquito_events']} detection event(s), "
         f"{stats['mosquito_total']} mosquito(es){species_part}. "
         f"Devices: {stats['device_count']} total, "
+        f"{stats['reporting_devices']} reporting, "
+        f"{stats['silent_devices']} silent, "
         f"{stats['offline_devices']} offline, "
-        f"{stats['low_battery_devices']} on low battery."
+        f"{stats['low_battery_devices']} on low battery. "
+        f"Alerts: {stats['alerts_opened']} opened, "
+        f"{stats['alerts_acknowledged']} acknowledged, "
+        f"{stats['alerts_closed']} closed, "
+        f"{stats['alerts_still_open']} still open."
     )
 
 
