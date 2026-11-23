@@ -1086,6 +1086,46 @@ the diel-activity profile used for intervention timing.
 
 ---
 
+## 21. Device health
+
+- New `GET /monitoring/device-health`, optional `?device_id=` (one device;
+  empty list if it is outside your scope). Same access as
+  `/monitoring/data-quality`: ADMIN sees their own cluster only, SUPER_ADMIN
+  all, others 403.
+- Top level: `days` (7, the window for the counted flags),
+  `offline_threshold_min`, `battery_low_v` / `battery_low_pct` (the live
+  `battery_critical_v` / `battery_critical_pct` alert thresholds), `devices`.
+- One row per device: `id`, `device_uuid`, `name`, `cluster_id`,
+  `cluster_name`, `region`, `last_seen` (= `last_sensor_data_at`, null =
+  never sent sensor_data), `last_activity`, `is_active` (same rule as the
+  device badge), `reading_at`, `battery_voltage`, `battery_pct`,
+  `detector_link` (`esp1_link_alive`), `signal` (always null; devices do not
+  send it) with `signal_reason`, `gps_fix`, `faults`.
+- `reading_at` / battery / `detector_link` come from the newest live,
+  device-sent (not CSV-imported), non-excluded reading whose timestamp is not
+  more than 5 min in the future, so a clock running ahead cannot pin an old
+  row as "latest" (`Device.latest_reading` elsewhere is unchanged). Null = no
+  such reading or not sent. A `battery_pct` outside 0-100 is returned as null
+  (invalid, not a reading) and never raises `low_battery`.
+- `gps_fix`: stored device position through `normalize_lat_lon`: true =
+  usable, false = stored but unusable such as 0,0, null = nothing stored.
+- `faults`: list of `{code, label, detail}`. Codes: `never_reported` (no
+  sensor_data ever), `offline` (has reported, not active now; the two are
+  exclusive), `low_battery` (same rule as the alert: `battery_pct` below
+  `battery_low_pct`, or without a pct `battery_voltage` below
+  `battery_low_v`), `detector_disconnected` (`esp1_link_alive` false; null
+  is not flagged), `no_gps_fix` (`gps_fix` false), `clock_ahead` and
+  `invalid_values` (the data-quality report's 7-day `clock_ahead_count` /
+  `invalid_values_received` > 0; the latter includes test-mode messages),
+  `sensor_missing` (temperature or humidity null on BOTH the external and
+  internal sensor in every live device-sent reading of the last 7 days,
+  while there are such readings).
+- Built on `build_report` from data_quality.py (new optional `device_id`
+  argument); `DeviceResponse.is_active` now calls the shared `is_online()`
+  helper in `app/device/schema.py`. No migration.
+
+---
+
 ## Files changed (summary)
 
 | Area | Files |
@@ -1099,4 +1139,5 @@ the diel-activity profile used for intervention timing.
 | CORS fix | `app/core/main.py` |
 | Notification system | `app/notification/**` (models, enums, schema, repository, service, channels/, providers/, events.py, routes.py, push_routes.py), `app/jobs/**`, trigger emits in `app/core/mqtt_client.py`, `app/service/{user,reseacher_request,device,device_cluster,device_location}_service.py`, `app/authentication/routes.py`, router + lifespan in `app/core/main.py`, `alembic/versions/b8c9d0e1f2a3_add_notification_tables.py`, `pyproject.toml` (pywebpush); FE: `components/notifications/*`, `app/(dashboard)/notifications/page.tsx`, `hooks/notification.ts`, `hooks/usePushSubscription.ts`, `queries/notification/*`, `actions/notificationMutation.ts`, `lib/date.ts`, `public/sw.js`; docs: `docs/notifications/**` |
 | Alert status | `app/notification/{models,schema,routes,service}.py`, `app/notification/repository/notification_repository.py`, `app/audit/models.py`, `app/jobs/summaries.py`, `alembic/versions/6f7a8b9c0d1e_add_notification_acknowledged.py`, `tests/test_alert_status.py`; FE: `app/(dashboard)/notifications/page.tsx`, `components/notifications/NotificationItem.tsx`, `queries/notification/notificationQueries.ts`, `actions/notificationMutation.ts`, `hooks/notification.ts`, `lib/date.ts` |
+| Device health | `app/monitoring/device_health.py`, `app/monitoring/{data_quality,schema}.py`, `app/device/schema.py`, `app/core/main.py`, `tests/test_device_health.py`; FE: `app/(dashboard)/device-health/page.tsx`, `components/devices/DeviceHealth.tsx`, `app/(dashboard)/devices/[id]/page.tsx`, `app/(dashboard)/layout.tsx`, `components/layout/Sidebar.tsx`, `hooks/monitoring.ts`, `queries/monitoring/monitoringQueries.ts` |
 | Dashboard charts | `app/dashboard/routes.py`, `app/dashboard/schema.py`, `app/service/dashboard_service.py` |

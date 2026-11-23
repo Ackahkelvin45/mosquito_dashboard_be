@@ -71,8 +71,10 @@ def report_scope(user: UserResponse) -> Optional[set[int]]:
 
 def build_report(session: Session, scope: Optional[set[int]], days: int,
                  now: Optional[datetime] = None,
-                 start: Optional[datetime] = None) -> DataQualityReport:
-    """`start` overrides now - days (used by /reports for a calendar period)."""
+                 start: Optional[datetime] = None,
+                 device_id: Optional[int] = None) -> DataQualityReport:
+    """`start` overrides now - days (used by /reports for a calendar period).
+    `device_id` narrows the scope to one device (/monitoring/device-health)."""
     window_end = now or datetime.utcnow()
     window_start = start or window_end - timedelta(days=days)
     limits = get_thresholds(session)
@@ -80,6 +82,8 @@ def build_report(session: Session, scope: Optional[set[int]], days: int,
     device_q = session.query(Device)
     if scope is not None:
         device_q = device_q.filter(Device.cluster_id.in_(scope))
+    if device_id is not None:
+        device_q = device_q.filter(Device.id == device_id)
     devices = device_q.order_by(Device.name, Device.id).all()
 
     report = DataQualityReport(

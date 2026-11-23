@@ -109,3 +109,39 @@ class DataQualityReport(BaseModel):
     humidity_min: float
     humidity_max: float
     devices: list[DataQualityDevice] = []
+
+
+class HealthFault(BaseModel):
+    code: str = Field(..., description="offline | never_reported | low_battery | detector_disconnected | no_gps_fix | "
+                                       "clock_ahead | invalid_values | sensor_missing")
+    label: str
+    detail: str
+
+
+class DeviceHealth(BaseModel):
+    """One device's current health. Null = not reported, never a guess."""
+    id: int
+    device_uuid: Optional[str] = None
+    name: str
+    cluster_id: Optional[int] = None
+    cluster_name: Optional[str] = None
+    region: Optional[str] = None
+    last_seen: Optional[datetime] = Field(None, description="Last sensor_data (last_sensor_data_at). Null = never sent.")
+    last_activity: Optional[datetime] = Field(None, description="Last MQTT message of any kind")
+    is_active: bool = Field(..., description="Same rule as the device is_active badge")
+    battery_voltage: Optional[float] = Field(None, description="From the latest live reading; null if none or not sent")
+    battery_pct: Optional[int] = Field(None, description="From the latest live reading; null if none, not sent, or outside 0-100 (invalid)")
+    reading_at: Optional[datetime] = Field(None, description="Timestamp of the reading battery/detector_link come from; null = no reading")
+    signal: None = Field(None, description="Always null: not measured")
+    signal_reason: str = "Devices do not send signal strength yet"
+    detector_link: Optional[bool] = Field(None, description="esp1_link_alive of the latest live reading; null = not reported")
+    gps_fix: Optional[bool] = Field(None, description="Stored position is a usable fix; false = stored but unusable (e.g. 0,0); null = no position stored")
+    faults: list[HealthFault] = []
+
+
+class DeviceHealthReport(BaseModel):
+    days: int = Field(..., description="Window for clock_ahead / invalid_values / sensor_missing")
+    offline_threshold_min: int
+    battery_low_v: float = Field(..., description="low_battery when battery_voltage is below this (used only without battery_pct)")
+    battery_low_pct: int = Field(..., description="low_battery when battery_pct is below this")
+    devices: list[DeviceHealth] = []

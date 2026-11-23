@@ -20,6 +20,17 @@ ACTIVE_WINDOW_HOURS = 24
 OFFLINE_AFTER_MIN = int(os.getenv("NOTIFY_OFFLINE_AFTER_MIN", "10"))
 
 
+def is_online(last_sensor_data_at: Optional[datetime]) -> bool:
+    """The is_active rule: sensor_data within OFFLINE_AFTER_MIN; never sent = offline."""
+    if not last_sensor_data_at:
+        return False
+    now = datetime.now(timezone.utc)
+    # last_sensor_data_at may be stored timezone-naive; compare on the same basis.
+    if last_sensor_data_at.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    return (now - last_sensor_data_at) <= timedelta(minutes=OFFLINE_AFTER_MIN)
+
+
 
 
 
@@ -197,14 +208,7 @@ class DeviceResponse(DeviceBase):
     )
     @property
     def is_active(self) -> bool:
-        if not self.last_sensor_data_at:
-            return False
-        last = self.last_sensor_data_at
-        now = datetime.now(timezone.utc)
-        # last_sensor_data_at may be stored timezone-naive; compare on the same basis.
-        if last.tzinfo is None:
-            now = now.replace(tzinfo=None)
-        return (now - last) <= timedelta(minutes=OFFLINE_AFTER_MIN)
+        return is_online(self.last_sensor_data_at)
 
     model_config = ConfigDict(from_attributes=True)
 
