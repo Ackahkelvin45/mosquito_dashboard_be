@@ -159,6 +159,11 @@ class SensorDataResponse(BaseModel):
     battery_pct: Optional[int] = None
     trap_status: Optional[bool] = False
     esp1_link_alive: Optional[bool] = None
+    # Late-upload visibility: when the server received the reading (null for
+    # older data predating the column) and the CSV import batch it came from
+    # (null = device-sent, not imported).
+    received_at: Optional[datetime] = None
+    import_batch_id: Optional[int] = None
     # Admin exclusion flag (row is kept and listed; left out of analysis).
     excluded_at: Optional[datetime] = None
     exclusion_reason: Optional[str] = None
@@ -305,6 +310,9 @@ class MosquitoEventResponse(BaseModel):
         default=None,
         description="The single mosquito reading for this event",
     )
+    # Late-upload visibility (same as SensorDataResponse).
+    received_at: Optional[datetime] = None
+    import_batch_id: Optional[int] = None
     # Admin exclusion flag (row is kept and listed; left out of analysis).
     excluded_at: Optional[datetime] = None
     exclusion_reason: Optional[str] = None
